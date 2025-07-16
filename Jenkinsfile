@@ -53,8 +53,7 @@ pipeline {
       steps {
         sh '''
           set -e
-          echo "Getting AKS credentials..."
-          az aks get-credentials --resource-group ${RESOURCE_GROUP} --name ${CLUSTER_NAME} --overwrite-existing
+          echo "Using pre-configured kubeconfig to deploy to AKS..."
 
           echo "Applying Kubernetes manifests..."
           kubectl apply -f k8s/deployment.yaml
