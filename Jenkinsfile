@@ -29,11 +29,13 @@ pipeline {
 
     stage('Login to ACR') {
       steps {
-        sh '''
-          set -e
-          echo "Logging into Azure Container Registry..."
-          az acr login --name ${ACR_NAME}
-        '''
+        withCredentials([usernamePassword(credentialsId: 'acr-credentials', usernameVariable: 'ACR_USERNAME', passwordVariable: 'ACR_PASSWORD')]) {
+          sh '''
+            set -e
+            echo "Logging into Azure Container Registry..."
+            echo $ACR_PASSWORD | docker login ${ACR_NAME}.azurecr.io -u $ACR_USERNAME --password-stdin
+          '''
+        }
       }
     }
 
