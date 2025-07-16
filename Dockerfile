@@ -16,4 +16,7 @@ EXPOSE 3000
 
 ENV NODE_ENV production
 CMD ["npm", "run", "start"]
+<<<<<<< HEAD
 
+=======
+>>>>>>> 566103e7681107360bc64131874fc6062e2346d1
