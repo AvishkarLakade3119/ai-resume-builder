@@ -119,7 +119,7 @@ const page = () => {
 
 " className="me-4 md:me-6">
             <span className="hover:text-primary-500 mt-3 text-sm font-medium text-gray-500 sm:mt-0">
-              Made by Avishkar Lakade!
+              Made by Avishkar!
             </span>
           </Link>
         </div>
