@@ -2,8 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: resume-app
-  labels:
-    app: resume-app
 spec:
   replicas: 2
   selector:
@@ -19,4 +17,5 @@ spec:
           image: avishkarairesume.azurecr.io/resume-app:latest
           ports:
             - containerPort: 3000
-
+      imagePullSecrets:
+        - name: acr-secret
