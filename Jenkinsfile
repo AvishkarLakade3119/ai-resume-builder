@@ -2,7 +2,7 @@ pipeline {
   agent any
 
   environment {
-    ACR_NAME = 'avishkarairesume'              // Replace with your ACR name
+    ACR_NAME = 'avishkarairesume'
     IMAGE_NAME = 'resume-app'
     RESOURCE_GROUP = 'poona_student'
     CLUSTER_NAME = 'resumeCluster'
@@ -11,8 +11,9 @@ pipeline {
   stages {
     stage('Checkout') {
       steps {
-        // Add GitHub credentials if repo is private
-        git credentialsId: 'github-credentials', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
+        git branch: 'main',
+            credentialsId: 'github-credentials',
+            url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
       }
     }
 
