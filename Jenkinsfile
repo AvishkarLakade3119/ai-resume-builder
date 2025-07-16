@@ -49,16 +49,18 @@ pipeline {
 
     stage('Deploy to AKS') {
       steps {
-        sh '''
-          az aks get-credentials --resource-group ${RESOURCE_GROUP} --name ${CLUSTER_NAME} --overwrite-existing
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+          sh '''
+            export KUBECONFIG=$KUBECONFIG_FILE
 
-          # Replace image tag in deployment.yaml
-          sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
+            # Replace image tag in deployment.yaml
+            sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
 
-          kubectl apply -f k8s/deployment.yaml
-          kubectl apply -f k8s/service.yaml
-          kubectl rollout status deployment/${IMAGE_NAME}
-        '''
+            kubectl apply -f k8s/deployment.yaml
+            kubectl apply -f k8s/service.yaml
+            kubectl rollout status deployment/${IMAGE_NAME}
+          '''
+        }
       }
     }
   }
