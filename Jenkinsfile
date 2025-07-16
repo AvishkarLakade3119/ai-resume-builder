@@ -14,15 +14,17 @@ pipeline {
         git branch: 'main',
             credentialsId: 'github-credentials',
             url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
+        script {
+          COMMIT_HASH = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+          env.IMAGE_TAG = COMMIT_HASH
+        }
       }
     }
 
     stage('Build Docker Image') {
       steps {
         sh '''
-          set -e
-          echo "Building Docker image..."
-          docker build -t ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:latest .
+          docker build -t ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG} .
         '''
       }
     }
@@ -31,8 +33,6 @@ pipeline {
       steps {
         withCredentials([usernamePassword(credentialsId: 'acr-credentials', usernameVariable: 'ACR_USERNAME', passwordVariable: 'ACR_PASSWORD')]) {
           sh '''
-            set -e
-            echo "Logging into Azure Container Registry..."
             echo $ACR_PASSWORD | docker login ${ACR_NAME}.azurecr.io -u $ACR_USERNAME --password-stdin
           '''
         }
@@ -42,9 +42,7 @@ pipeline {
     stage('Push Image to ACR') {
       steps {
         sh '''
-          set -e
-          echo "Pushing Docker image to ACR..."
-          docker push ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:latest
+          docker push ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
         '''
       }
     }
@@ -52,14 +50,13 @@ pipeline {
     stage('Deploy to AKS') {
       steps {
         sh '''
-          set -e
-          echo "Using pre-configured kubeconfig to deploy to AKS..."
+          az aks get-credentials --resource-group ${RESOURCE_GROUP} --name ${CLUSTER_NAME} --overwrite-existing
 
-          echo "Applying Kubernetes manifests..."
+          # Replace image tag in deployment.yaml
+          sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
+
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
-
-          echo "Checking rollout status..."
           kubectl rollout status deployment/${IMAGE_NAME}
         '''
       }
