@@ -30,7 +30,7 @@ const page = () => {
               </span>
             </Link>
             <Link
-              href="https://github.com/exclusiveabhi/ai-resume-builder.git"
+              href="https://github.com/AvishkarLakade3119/ai-resume-builder.git"
               className="relative flex h-11 w-full items-center justify-center px-6 before:absolute before:inset-0 before:rounded-full before:border before:border-transparent before:bg-slate-200 before:bg-gradient-to-b before:transition before:duration-300 hover:before:scale-105 active:duration-75 active:before:scale-95 sm:w-max"
             >
               <span className="relative text-base font-semibold text-primary">
@@ -117,7 +117,7 @@ const page = () => {
           </span>
           <Link href="https://github.com/exclusiveabhi" className="me-4 md:me-6">
             <span className="hover:text-primary-500 mt-3 text-sm font-medium text-gray-500 sm:mt-0">
-              Made with ❤️ by Abhishek
+              Made by Avishkar
             </span>
           </Link>
         </div>
