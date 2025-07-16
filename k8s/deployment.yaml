@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: resume-container
-          image: avishkarairesume.azurecr.io/resume-app:latest
+          image: avishkarairesume.azurecr.io/resume-app:IMAGE_TAG
           ports:
             - containerPort: 3000
       imagePullSecrets:
