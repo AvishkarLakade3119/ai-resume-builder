@@ -1,24 +1,22 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: resume-app-ingress
+  name: resume-ingress
   annotations:
-    kubernetes.io/ingress.class: nginx
     cert-manager.io/cluster-issuer: letsencrypt-prod
-    nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
   tls:
-  - hosts:
-    - avishkarresume.cloudns.net  # ✅ Your actual domain
-    secretName: resume-app-tls     # Will be created by cert-manager
+    - hosts:
+        - resumebuilder.publicvm.com
+      secretName: resumebuilder-tls
   rules:
-  - host: avishkarresume.cloudns.net  # ✅ Your actual domain
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: resume-app-service  # ✅ Match this to your actual service name from service.yaml
-            port:
-              number: 80
+    - host: resumebuilder.publicvm.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: resume-builder-service   # <-- This should be the real name of your service
+                port:
+                  number: 80
