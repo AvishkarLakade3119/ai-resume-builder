@@ -4,6 +4,8 @@ metadata:
   name: resume-ingress
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    kubernetes.io/ingress.class: "nginx"  # <-- 🔥 Required
 spec:
   tls:
     - hosts:
@@ -17,6 +19,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: resume-builder-service   # <-- This should be the real name of your service
+                name: resume-builder-service
                 port:
                   number: 80
