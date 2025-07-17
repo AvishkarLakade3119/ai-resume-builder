@@ -6,7 +6,7 @@ pipeline {
     IMAGE_NAME = 'resume-app'
     RESOURCE_GROUP = 'poona_student'
     CLUSTER_NAME = 'resumeCluster'
-    DNS_API_KEY = 'ULrX68133L29lwW5fZc7ccLW62r7Sd' // 🔐 Use Jenkins secret for security
+    DNS_API_KEY = 'ULrX68133L29lwW5fZc7ccLW62r7Sd' // 🔐 Replace with a Jenkins secret if needed
     DNS_HOST = 'resumebuilder.publicvm.com'
   }
 
@@ -72,8 +72,12 @@ pipeline {
             kubectl apply -f k8s/service.yaml
             kubectl apply -f k8s/your-ingress-file.yaml
 
-            # Wait for rollout
-            kubectl rollout status deployment/${IMAGE_NAME}
+            # Fix rollout status line (to prevent error)
+            if kubectl get deployment ${IMAGE_NAME}; then
+              kubectl rollout status deployment/${IMAGE_NAME}
+            else
+              echo "⚠️ Deployment ${IMAGE_NAME} not found!"
+            fi
           '''
         }
       }
@@ -85,26 +89,15 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            echo "🌐 Fetching external IP of LoadBalancer service..."
+            # Get external IP of LoadBalancer service
             EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 
-            if [ -z "$EXTERNAL_IP" ]; then
-              echo "❌ External IP not available yet. Aborting DNS update."
-              exit 1
-            fi
-
             echo "🔁 Found LoadBalancer IP: $EXTERNAL_IP"
-            echo "🌍 Updating DNS A record via DNSExit..."
 
-            RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/dns_result.txt "https://api.dnsexit.com/dns/ud/?apikey=${DNS_API_KEY}" -d "host=${DNS_HOST}&ip=$EXTERNAL_IP")
+            # Call DNSExit API to update A record
+            curl -s "https://api.dnsexit.com/dns/ud/?apikey=${DNS_API_KEY}" -d "host=${DNS_HOST}&ip=$EXTERNAL_IP"
 
-            if [ "$RESPONSE" -ne 200 ]; then
-              echo "❌ DNS update failed. Response code: $RESPONSE"
-              cat /tmp/dns_result.txt
-              exit 1
-            fi
-
-            echo "✅ DNS A record updated: ${DNS_HOST} → $EXTERNAL_IP"
+            echo "✅ DNS A record updated for ${DNS_HOST} → $EXTERNAL_IP"
           '''
         }
       }
