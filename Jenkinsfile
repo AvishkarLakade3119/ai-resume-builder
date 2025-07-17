@@ -36,10 +36,12 @@ pipeline {
           if ! command -v trivy &> /dev/null
           then
             echo "Installing Trivy..."
-            wget -qO- https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.50.1_Linux-64bit.tar.gz | tar zxvf - -C /usr/local/bin
+            wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.52.2_Linux-64bit.tar.gz
+            tar -zxvf trivy_0.52.2_Linux-64bit.tar.gz
+            sudo mv trivy /usr/local/bin/
           fi
 
-          # Run image scan
+          # Run image scan (does not fail the pipeline if issues found)
           trivy image --exit-code 0 --severity MEDIUM,HIGH,CRITICAL ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
         '''
       }
