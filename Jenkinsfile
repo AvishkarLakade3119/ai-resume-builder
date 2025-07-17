@@ -6,7 +6,6 @@ pipeline {
     IMAGE_NAME = 'resume-app'
     RESOURCE_GROUP = 'poona_student'
     CLUSTER_NAME = 'resumeCluster'
-    DNS_API_KEY = 'ULrX68133L29lwW5fZc7ccLW62r7Sd' // 🔐 Replace with a Jenkins secret if needed
     DNS_HOST = 'resumebuilder.publicvm.com'
   }
 
@@ -72,11 +71,11 @@ pipeline {
             kubectl apply -f k8s/service.yaml
             kubectl apply -f k8s/your-ingress-file.yaml
 
-            # Fix rollout status line (to prevent error)
+            # Wait for rollout (only if deployment exists)
             if kubectl get deployment ${IMAGE_NAME}; then
               kubectl rollout status deployment/${IMAGE_NAME}
             else
-              echo "⚠️ Deployment ${IMAGE_NAME} not found!"
+              echo "⚠️ Deployment ${IMAGE_NAME} not found. Skipping rollout wait."
             fi
           '''
         }
@@ -85,19 +84,25 @@ pipeline {
 
     stage('Update DNS Record') {
       steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+        withCredentials([
+          file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE'),
+          string(credentialsId: 'dnsexit-api-key', variable: 'DNS_API_KEY')
+        ]) {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            # Get external IP of LoadBalancer service
+            # Get AKS LoadBalancer IP of resume-service
             EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            echo "🔁 Found AKS LoadBalancer IP: $EXTERNAL_IP"
 
-            echo "🔁 Found LoadBalancer IP: $EXTERNAL_IP"
+            if [ -z "$EXTERNAL_IP" ]; then
+              echo "❌ ERROR: No external IP found for resume-service"
+              exit 1
+            fi
 
-            # Call DNSExit API to update A record
-            curl -s "https://api.dnsexit.com/dns/ud/?apikey=${DNS_API_KEY}" -d "host=${DNS_HOST}&ip=$EXTERNAL_IP"
-
-            echo "✅ DNS A record updated for ${DNS_HOST} → $EXTERNAL_IP"
+            # Update DNS A record via DNSExit
+            curl -s "https://api.dnsexit.com/dns/ud/?apikey=$DNS_API_KEY" -d "host=${DNS_HOST}&ip=$EXTERNAL_IP"
+            echo "✅ DNS A record updated: ${DNS_HOST} → $EXTERNAL_IP"
           '''
         }
       }
