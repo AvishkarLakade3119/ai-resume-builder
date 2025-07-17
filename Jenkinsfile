@@ -71,7 +71,7 @@ pipeline {
             kubectl apply -f k8s/service.yaml
             kubectl apply -f k8s/your-ingress-file.yaml
 
-            # Wait for rollout (only if deployment exists)
+            # Wait for rollout
             if kubectl get deployment ${IMAGE_NAME}; then
               kubectl rollout status deployment/${IMAGE_NAME}
             else
@@ -86,23 +86,24 @@ pipeline {
       steps {
         withCredentials([
           file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE'),
-          string(credentialsId: 'dnsexit-api-key', variable: 'DNS_API_KEY')
+          string(credentialsId: 'dnsexit-apikey', variable: 'DNS_API_KEY')  // 🔐 Securely pull API key from Jenkins Secrets
         ]) {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            # Get AKS LoadBalancer IP of resume-service
+            # Fetch latest LoadBalancer IP
             EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-            echo "🔁 Found AKS LoadBalancer IP: $EXTERNAL_IP"
+            echo "🔁 AKS LoadBalancer IP: $EXTERNAL_IP"
 
             if [ -z "$EXTERNAL_IP" ]; then
-              echo "❌ ERROR: No external IP found for resume-service"
+              echo "❌ ERROR: No external IP assigned yet. Aborting DNS update."
               exit 1
             fi
 
-            # Update DNS A record via DNSExit
-            curl -s "https://api.dnsexit.com/dns/ud/?apikey=$DNS_API_KEY" -d "host=${DNS_HOST}&ip=$EXTERNAL_IP"
-            echo "✅ DNS A record updated: ${DNS_HOST} → $EXTERNAL_IP"
+            # Update DNS via DNSExit
+            curl -s "https://api.dnsexit.com/dns/ud/?apikey=${DNS_API_KEY}" -d "host=${DNS_HOST}&ip=${EXTERNAL_IP}"
+
+            echo "✅ DNS A record updated: ${DNS_HOST} → ${EXTERNAL_IP}"
           '''
         }
       }
@@ -111,10 +112,10 @@ pipeline {
 
   post {
     failure {
-      echo '🚨 Pipeline failed! Check logs above.'
+      echo '🚨 Pipeline failed! Check logs for details.'
     }
     success {
-      echo '✅ Deployment + DNS update successful!'
+      echo '✅ Deployment and DNS sync successful!'
     }
   }
 }
