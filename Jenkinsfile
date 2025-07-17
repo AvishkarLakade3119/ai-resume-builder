@@ -3,7 +3,7 @@ pipeline {
 
   environment {
     ACR_NAME = 'avishkarairesume'
-    IMAGE_NAME = 'resume-app'
+    IMAGE_NAME = 'resume-app' // ✅ Updated
     RESOURCE_GROUP = 'poona_student'
     CLUSTER_NAME = 'resumeCluster'
   }
@@ -32,16 +32,7 @@ pipeline {
     stage('Scan Docker Image with Trivy') {
       steps {
         sh '''
-          # Install Trivy if not already installed
-          if ! command -v trivy &> /dev/null
-          then
-            echo "Installing Trivy..."
-            wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.52.2_Linux-64bit.tar.gz
-            tar -zxvf trivy_0.52.2_Linux-64bit.tar.gz
-            sudo mv trivy /usr/local/bin/
-          fi
-
-          # Run image scan (does not fail the pipeline if issues found)
+          # Use installed Trivy binary directly (no installation)
           trivy image --exit-code 0 --severity MEDIUM,HIGH,CRITICAL ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
         '''
       }
