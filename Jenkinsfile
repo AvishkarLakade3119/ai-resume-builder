@@ -29,6 +29,22 @@ pipeline {
       }
     }
 
+    stage('Scan Docker Image with Trivy') {
+      steps {
+        sh '''
+          # Install Trivy if not already installed
+          if ! command -v trivy &> /dev/null
+          then
+            echo "Installing Trivy..."
+            wget -qO- https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.50.1_Linux-64bit.tar.gz | tar zxvf - -C /usr/local/bin
+          fi
+
+          # Run image scan
+          trivy image --exit-code 0 --severity MEDIUM,HIGH,CRITICAL ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
+        '''
+      }
+    }
+
     stage('Login to ACR') {
       steps {
         withCredentials([usernamePassword(credentialsId: 'acr-credentials', usernameVariable: 'ACR_USERNAME', passwordVariable: 'ACR_PASSWORD')]) {
