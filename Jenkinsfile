@@ -15,8 +15,7 @@ pipeline {
             credentialsId: 'github-credentials',
             url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
         script {
-          COMMIT_HASH = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-          env.IMAGE_TAG = COMMIT_HASH
+          env.IMAGE_TAG = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
         }
       }
     }
@@ -32,7 +31,7 @@ pipeline {
     stage('Scan Docker Image with Trivy') {
       steps {
         sh '''
-          # Use installed Trivy binary directly (no installation)
+          echo "🔍 Running Trivy scan..."
           trivy image --exit-code 0 --severity MEDIUM,HIGH,CRITICAL ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
         '''
       }
@@ -62,7 +61,7 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            # Replace image tag in deployment.yaml
+            # Replace image tag dynamically in deployment.yaml
             sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
 
             kubectl apply -f k8s/deployment.yaml
