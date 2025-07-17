@@ -6,7 +6,6 @@ pipeline {
     IMAGE_NAME = 'resume-app'
     RESOURCE_GROUP = 'poona_student'
     CLUSTER_NAME = 'resumeCluster'
-    DNS_HOST = 'resumebuilder.publicvm.com'
   }
 
   stages {
@@ -33,8 +32,6 @@ pipeline {
       steps {
         sh '''
           echo "🔍 Running Trivy scan..."
-          mkdir -p /tmp/trivy-tmp  # Fix for space issues
-          export TMPDIR=/tmp/trivy-tmp
           trivy image --exit-code 0 --severity MEDIUM,HIGH,CRITICAL ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
         '''
       }
@@ -64,60 +61,26 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            # Replace image tag in deployment file (escaped)
+            # Update image tag in deployment file
             sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
 
-            # Apply Kubernetes configs
             kubectl apply -f k8s/cluster-issuer.yaml
             kubectl apply -f k8s/deployment.yaml
             kubectl apply -f k8s/service.yaml
-            kubectl apply -f k8s/ingress.yaml
 
-            # Wait for rollout
+            # Optional: apply ingress if present
+            if [ -f k8s/ingress.yaml ]; then
+              kubectl apply -f k8s/ingress.yaml
+            else
+              echo "⚠️ ingress.yaml not found. Skipping ingress setup."
+            fi
+
+            # Wait for rollout to finish
             if kubectl get deployment ${IMAGE_NAME}; then
               kubectl rollout status deployment/${IMAGE_NAME}
             else
               echo "⚠️ Deployment ${IMAGE_NAME} not found. Skipping rollout wait."
             fi
-          '''
-        }
-      }
-    }
-
-    stage('Update DNS Record') {
-      steps {
-        withCredentials([
-          file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE'),
-          string(credentialsId: 'dnsexit-apikey', variable: 'DNS_API_KEY')
-        ]) {
-          sh '''
-            export KUBECONFIG=$KUBECONFIG_FILE
-
-            echo "⏳ Waiting for LoadBalancer external IP..."
-
-            COUNT=0
-            MAX_RETRIES=12
-            EXTERNAL_IP=""
-
-            while [ $COUNT -lt $MAX_RETRIES ]; do
-              EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath="{.status.loadBalancer.ingress[0].ip}")
-              if [ -n "$EXTERNAL_IP" ]; then
-                echo "✅ Found external IP: $EXTERNAL_IP"
-                break
-              fi
-              echo "⏳ Attempt $((COUNT+1)): Waiting for external IP..."
-              sleep 10
-              COUNT=$((COUNT+1))
-            done
-
-            if [ -z "$EXTERNAL_IP" ]; then
-              echo "❌ ERROR: LoadBalancer IP not assigned after waiting. Aborting DNS update."
-              exit 1
-            fi
-
-            echo "🔗 Updating DNS record..."
-            curl -s "https://api.dnsexit.com/dns/ud/?apikey=$DNS_API_KEY" -d "host=$DNS_HOST&ip=$EXTERNAL_IP"
-            echo "✅ DNS updated: $DNS_HOST → $EXTERNAL_IP"
           '''
         }
       }
@@ -129,7 +92,7 @@ pipeline {
       echo '🚨 Pipeline failed! Check logs for details.'
     }
     success {
-      echo '✅ Deployment and DNS sync successful!'
+      echo '✅ Deployment to AKS successful!'
     }
   }
 }
