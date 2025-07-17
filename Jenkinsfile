@@ -62,20 +62,19 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            # Replace image tag in deployment.yaml
+            # Update deployment image tag
             sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
 
-            # Apply Kubernetes manifests
+            # Apply K8s manifests
             kubectl apply -f k8s/cluster-issuer.yaml
             kubectl apply -f k8s/deployment.yaml
             kubectl apply -f k8s/service.yaml
             kubectl apply -f k8s/your-ingress-file.yaml
 
-            # Wait for rollout
             if kubectl get deployment ${IMAGE_NAME}; then
               kubectl rollout status deployment/${IMAGE_NAME}
             else
-              echo "⚠️ Deployment ${IMAGE_NAME} not found. Skipping rollout wait."
+              echo "⚠️ Deployment ${IMAGE_NAME} not found."
             fi
           '''
         }
@@ -86,12 +85,11 @@ pipeline {
       steps {
         withCredentials([
           file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE'),
-          string(credentialsId: 'dnsexit-apikey', variable: 'DNS_API_KEY')  // 🔐 Securely pull API key from Jenkins Secrets
+          string(credentialsId: 'dnsexit-apikey', variable: 'DNS_API_KEY')
         ]) {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            # Fetch latest LoadBalancer IP
             EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
             echo "🔁 AKS LoadBalancer IP: $EXTERNAL_IP"
 
@@ -100,9 +98,7 @@ pipeline {
               exit 1
             fi
 
-            # Update DNS via DNSExit
             curl -s "https://api.dnsexit.com/dns/ud/?apikey=${DNS_API_KEY}" -d "host=${DNS_HOST}&ip=${EXTERNAL_IP}"
-
             echo "✅ DNS A record updated: ${DNS_HOST} → ${EXTERNAL_IP}"
           '''
         }
