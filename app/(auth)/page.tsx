@@ -111,7 +111,7 @@ const page = () => {
             © {new Date().getFullYear()}{" "}
               
             <span className="hover:text-primary-500 hover:cursor-pointer">
-              ResumeCraft
+              ResumeCraft by Avi
             </span>
             . All Rights Reserved.
           </span>
@@ -119,7 +119,7 @@ const page = () => {
 
 " className="me-4 md:me-6">
             <span className="hover:text-primary-500 mt-3 text-sm font-medium text-gray-500 sm:mt-0">
-              Made by Avishkar!
+              Developed by Avishkar Lakade!
             </span>
           </Link>
         </div>
