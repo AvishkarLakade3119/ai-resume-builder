@@ -64,8 +64,12 @@ pipeline {
             # Replace image tag dynamically in deployment.yaml
             sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
 
+            # Apply all required K8s manifests
+            kubectl apply -f k8s/cluster-issuer.yaml
             kubectl apply -f k8s/deployment.yaml
             kubectl apply -f k8s/service.yaml
+            kubectl apply -f k8s/your-ingress-file.yaml
+
             kubectl rollout status deployment/${IMAGE_NAME}
           '''
         }
