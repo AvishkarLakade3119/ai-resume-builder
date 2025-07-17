@@ -3,9 +3,11 @@ pipeline {
 
   environment {
     ACR_NAME = 'avishkarairesume'
-    IMAGE_NAME = 'resume-app' // ✅ Updated
+    IMAGE_NAME = 'resume-app'
     RESOURCE_GROUP = 'poona_student'
     CLUSTER_NAME = 'resumeCluster'
+    DNS_API_KEY = 'ULrX68133L29lwW5fZc7ccLW62r7Sd' // 🔐 Replace with a Jenkins secret if needed
+    DNS_HOST = 'resumebuilder.publicvm.com'
   }
 
   stages {
@@ -61,16 +63,36 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            # Replace image tag dynamically in deployment.yaml
+            # Replace image tag in deployment.yaml
             sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
 
-            # Apply all required K8s manifests
+            # Apply Kubernetes manifests
             kubectl apply -f k8s/cluster-issuer.yaml
             kubectl apply -f k8s/deployment.yaml
             kubectl apply -f k8s/service.yaml
             kubectl apply -f k8s/your-ingress-file.yaml
 
             kubectl rollout status deployment/${IMAGE_NAME}
+          '''
+        }
+      }
+    }
+
+    stage('Update DNS Record') {
+      steps {
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+          sh '''
+            export KUBECONFIG=$KUBECONFIG_FILE
+
+            # Get external IP of LoadBalancer service
+            EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+            echo "🔁 Found LoadBalancer IP: $EXTERNAL_IP"
+
+            # Call DNSExit API to update A record
+            curl -s "https://api.dnsexit.com/dns/ud/?apikey=${DNS_API_KEY}" -d "host=${DNS_HOST}&ip=$EXTERNAL_IP"
+
+            echo "✅ DNS A record updated for ${DNS_HOST} → $EXTERNAL_IP"
           '''
         }
       }
@@ -82,7 +104,7 @@ pipeline {
       echo '🚨 Pipeline failed! Check logs above.'
     }
     success {
-      echo '✅ Deployment successful!'
+      echo '✅ Deployment + DNS update successful!'
     }
   }
 }
