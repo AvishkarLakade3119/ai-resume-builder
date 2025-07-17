@@ -85,21 +85,29 @@ pipeline {
           file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE'),
           string(credentialsId: 'dnsexit-apikey', variable: 'DNS_API_KEY')
         ]) {
-          sh """
+          sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            EXTERNAL_IP=\$(kubectl get svc resume-service -o jsonpath="{.status.loadBalancer.ingress[0].ip}")
-            echo "🔁 AKS LoadBalancer IP: \$EXTERNAL_IP"
+            # Retry loop to wait for external IP
+            for i in {1..10}; do
+              EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath="{.status.loadBalancer.ingress[0].ip}")
+              if [ -n "$EXTERNAL_IP" ]; then
+                echo "🔁 AKS LoadBalancer IP: $EXTERNAL_IP"
+                break
+              fi
+              echo "⏳ Waiting for LoadBalancer IP..."
+              sleep 10
+            done
 
-            if [ -z "\$EXTERNAL_IP" ]; then
-              echo "❌ ERROR: No external IP assigned yet. Aborting DNS update."
+            if [ -z "$EXTERNAL_IP" ]; then
+              echo "❌ ERROR: No external IP assigned. Aborting DNS update."
               exit 1
             fi
 
-            curl -s "https://api.dnsexit.com/dns/ud/?apikey=$DNS_API_KEY" -d "host=$DNS_HOST&ip=\$EXTERNAL_IP"
+            curl -s "https://api.dnsexit.com/dns/ud/?apikey=$DNS_API_KEY" -d "host=$DNS_HOST&ip=$EXTERNAL_IP"
 
-            echo "✅ DNS A record updated: $DNS_HOST → \$EXTERNAL_IP"
-          """
+            echo "✅ DNS A record updated: $DNS_HOST → $EXTERNAL_IP"
+          '''
         }
       }
     }
