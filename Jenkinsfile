@@ -23,27 +23,36 @@ pipeline {
 
     stage('Build Docker Image') {
       steps {
-        sh 'docker build -t ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG} .'
+        sh '''
+          docker build -t ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG} .
+        '''
       }
     }
 
-    stage('Scan Docker Image') {
+    stage('Scan Docker Image with Trivy') {
       steps {
-        sh 'trivy image --exit-code 0 --severity MEDIUM,HIGH,CRITICAL ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}'
+        sh '''
+          echo "🔍 Running Trivy scan..."
+          trivy image --exit-code 0 --severity MEDIUM,HIGH,CRITICAL ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
+        '''
       }
     }
 
     stage('Login to ACR') {
       steps {
         withCredentials([usernamePassword(credentialsId: 'acr-credentials', usernameVariable: 'ACR_USERNAME', passwordVariable: 'ACR_PASSWORD')]) {
-          sh 'echo $ACR_PASSWORD | docker login ${ACR_NAME}.azurecr.io -u $ACR_USERNAME --password-stdin'
+          sh '''
+            echo $ACR_PASSWORD | docker login ${ACR_NAME}.azurecr.io -u $ACR_USERNAME --password-stdin
+          '''
         }
       }
     }
 
-    stage('Push Docker Image') {
+    stage('Push Image to ACR') {
       steps {
-        sh 'docker push ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}'
+        sh '''
+          docker push ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
+        '''
       }
     }
 
@@ -63,7 +72,7 @@ pipeline {
             if kubectl get deployment ${IMAGE_NAME}; then
               kubectl rollout status deployment/${IMAGE_NAME}
             else
-              echo "⚠️ Deployment ${IMAGE_NAME} not found."
+              echo "⚠️ Deployment ${IMAGE_NAME} not found. Skipping rollout wait."
             fi
           '''
         }
@@ -79,17 +88,17 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-            echo "AKS LoadBalancer IP: $EXTERNAL_IP"
+            EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath="{.status.loadBalancer.ingress[0].ip}")
+            echo "🔁 AKS LoadBalancer IP: $EXTERNAL_IP"
 
             if [ -z "$EXTERNAL_IP" ]; then
-              echo "❌ ERROR: LoadBalancer IP not yet assigned."
+              echo "❌ ERROR: No external IP assigned yet. Aborting DNS update."
               exit 1
             fi
 
-            curl -s "https://api.dnsexit.com/dns/ud/?apikey=${DNS_API_KEY}" -d "host=${DNS_HOST}&ip=$EXTERNAL_IP"
+            curl -s "https://api.dnsexit.com/dns/ud/?apikey=$DNS_API_KEY" -d "host=$DNS_HOST&ip=$EXTERNAL_IP"
 
-            echo "✅ DNS record for ${DNS_HOST} updated to → $EXTERNAL_IP"
+            echo "✅ DNS A record updated: $DNS_HOST → $EXTERNAL_IP"
           '''
         }
       }
@@ -98,10 +107,10 @@ pipeline {
 
   post {
     failure {
-      echo '❌ Pipeline Failed!'
+      echo '🚨 Pipeline failed! Check logs for details.'
     }
     success {
-      echo '✅ Build, Deploy & DNS Update Successful!'
+      echo '✅ Deployment and DNS sync successful!'
     }
   }
 }
