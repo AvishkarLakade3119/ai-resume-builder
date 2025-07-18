@@ -2,11 +2,11 @@ pipeline {
   agent any
 
   environment {
-    ACR_NAME     = 'avishkarairesume'
-    IMAGE_NAME   = 'resume-app'
+    ACR_NAME       = 'avishkarairesume'
+    IMAGE_NAME     = 'resume-app'
     RESOURCE_GROUP = 'poona_student'
     CLUSTER_NAME   = 'resumeCluster'
-    DNS_HOST     = 'resumebuilder.publicvm.com'
+    DNS_HOST       = 'resumebuilder.publicvm.com'
   }
 
   stages {
@@ -40,10 +40,12 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
+            echo "🔍 Verifying cluster..."
             kubectl config current-context
             kubectl get nodes
-            kubectl wait --for=condition=Ready nodes --timeout=180s
+            kubectl wait node --all --for=condition=Ready --timeout=180s
 
+            echo "📦 Updating deployment..."
             sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
 
             kubectl apply -f k8s/cluster-issuer.yaml || true
@@ -54,6 +56,7 @@ pipeline {
               kubectl apply -f k8s/ingress.yaml
             fi
 
+            echo "⏳ Waiting for rollout to complete..."
             kubectl rollout status deployment/${IMAGE_NAME} --timeout=180s
           '''
         }
@@ -69,28 +72,29 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            echo "⏳ Waiting for LoadBalancer external IP..."
+            echo "🌐 Fetching external IP of resume-service..."
             for i in {1..10}; do
               EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
               if [ ! -z "$EXTERNAL_IP" ]; then
                 echo "✅ Found External IP: $EXTERNAL_IP"
                 break
               fi
-              echo "🔄 Waiting for external IP... ($i/10)"
+              echo "🔁 Retry $i: Waiting for external IP..."
               sleep 15
             done
 
             if [ -z "$EXTERNAL_IP" ]; then
-              echo "❌ ERROR: AKS External IP was not assigned. DNS update skipped."
+              echo "❌ ERROR: LoadBalancer IP not assigned. DNS update skipped."
               exit 1
             fi
 
-            echo "🌐 Updating DNS record for ${DNS_HOST} to $EXTERNAL_IP"
-
+            echo "🔁 Updating DNS record at DNSExit..."
             curl -s -X POST "https://api.dnsexit.com/dns/ud/" \
               -d "apikey=${DNS_API_KEY}" \
               -d "host=${DNS_HOST}" \
               -d "ip=${EXTERNAL_IP}"
+
+            echo "✅ DNS record updated to $EXTERNAL_IP"
           '''
         }
       }
@@ -99,10 +103,10 @@ pipeline {
 
   post {
     success {
-      echo '✅ SUCCESS: Application deployed and DNS updated!'
+      echo '✅ SUCCESS: Deployed to AKS and DNS updated.'
     }
     failure {
-      echo '❌ FAILURE: Check error messages in logs above.'
+      echo '❌ FAILURE: Check error logs.'
     }
   }
 }
