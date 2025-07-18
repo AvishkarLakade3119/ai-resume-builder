@@ -62,26 +62,32 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            # Update image in deployment manifest
+            echo "📄 Checking kube context..."
+            kubectl config current-context || { echo "❌ Invalid kubeconfig or context!"; exit 1; }
+
+            echo "⏳ Waiting for AKS nodes to become Ready..."
+            kubectl wait --for=condition=Ready nodes --timeout=180s || {
+              echo "❌ AKS nodes not ready!"; exit 1;
+            }
+
+            echo "🔧 Updating image tag in deployment.yaml..."
             sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
 
-            echo "📦 Applying Kubernetes manifests..."
-            kubectl apply -f k8s/cluster-issuer.yaml
+            echo "🚀 Applying manifests to AKS..."
+            kubectl apply -f k8s/cluster-issuer.yaml || true
             kubectl apply -f k8s/deployment.yaml
             kubectl apply -f k8s/service.yaml
 
             if [ -f k8s/ingress.yaml ]; then
               kubectl apply -f k8s/ingress.yaml
             else
-              echo "⚠️ ingress.yaml not found. Skipping ingress setup."
+              echo "⚠️ No ingress.yaml found. Skipping..."
             fi
 
-            # Rollout status
-            if kubectl get deployment ${IMAGE_NAME}; then
-              kubectl rollout status deployment/${IMAGE_NAME}
-            else
-              echo "⚠️ Deployment ${IMAGE_NAME} not found. Skipping rollout wait."
-            fi
+            echo "📦 Waiting for deployment rollout..."
+            kubectl rollout status deployment/${IMAGE_NAME} --timeout=180s || {
+              echo "❌ Deployment rollout failed"; exit 1;
+            }
           '''
         }
       }
@@ -96,23 +102,31 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            echo "🌐 Fetching External IP of AKS LoadBalancer service..."
-            EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-            echo "Found External IP: $EXTERNAL_IP"
+            echo "🌐 Getting AKS LoadBalancer External IP..."
+            EXTERNAL_IP=""
+            for i in {1..10}; do
+              EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+              if [ -n "$EXTERNAL_IP" ]; then
+                break
+              fi
+              echo "⏳ Waiting for External IP to be assigned... ($i)"
+              sleep 15
+            done
 
             if [ -z "$EXTERNAL_IP" ]; then
-              echo "❌ Could not retrieve External IP. Exiting..."
+              echo "❌ Failed to fetch External IP. Skipping DNS update."
               exit 1
             fi
 
-            echo "🔁 Updating DNSExit record to $EXTERNAL_IP..."
+            echo "✅ Found External IP: $EXTERNAL_IP"
 
+            echo "🔁 Updating DNSExit with AKS IP..."
             curl -X POST "https://api.dnsexit.com/dns/ud/" \
               -d "apikey=$DNS_API_KEY" \
               -d "host=resumebuilder.publicvm.com" \
               -d "ip=$EXTERNAL_IP"
 
-            echo "✅ DNS record updated successfully."
+            echo "✅ DNS record updated to point to $EXTERNAL_IP"
           '''
         }
       }
@@ -124,7 +138,7 @@ pipeline {
       echo '🚨 Pipeline failed! Check logs for errors.'
     }
     success {
-      echo '✅ Deployment successful and DNS updated to AKS IP!'
+      echo '✅ Deployment and DNS update completed successfully!'
     }
   }
 }
