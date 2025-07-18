@@ -25,9 +25,9 @@ pipeline {
       steps {
         withCredentials([usernamePassword(credentialsId: 'acr-credentials', usernameVariable: 'ACR_USERNAME', passwordVariable: 'ACR_PASSWORD')]) {
           sh '''
-            docker build -t ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG} .
-            echo $ACR_PASSWORD | docker login ${ACR_NAME}.azurecr.io -u $ACR_USERNAME --password-stdin
-            docker push ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
+            docker build -t $ACR_NAME.azurecr.io/$IMAGE_NAME:$IMAGE_TAG .
+            echo $ACR_PASSWORD | docker login $ACR_NAME.azurecr.io -u $ACR_USERNAME --password-stdin
+            docker push $ACR_NAME.azurecr.io/$IMAGE_NAME:$IMAGE_TAG
           '''
         }
       }
@@ -45,7 +45,7 @@ pipeline {
             kubectl wait node --all --for=condition=Ready --timeout=180s
 
             echo "📦 Updating deployment image tag..."
-            sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
+            sed -i "s|image: $ACR_NAME.azurecr.io/$IMAGE_NAME:.*|image: $ACR_NAME.azurecr.io/$IMAGE_NAME:$IMAGE_TAG|g" k8s/deployment.yaml
 
             kubectl apply -f k8s/cluster-issuer.yaml || true
             kubectl apply -f k8s/deployment.yaml
@@ -56,7 +56,7 @@ pipeline {
             fi
 
             echo "⏳ Waiting for rollout to complete..."
-            kubectl rollout status deployment/${IMAGE_NAME} --timeout=180s
+            kubectl rollout status deployment/$IMAGE_NAME --timeout=180s
           '''
         }
       }
@@ -66,15 +66,18 @@ pipeline {
       steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
           script {
-            def maxRetries = 12  // 12 × 15s = 3 minutes
+            def maxRetries = 12
             def externalIP = ""
             for (int i = 1; i <= maxRetries; i++) {
-              externalIP = sh(script: '''
-                export KUBECONFIG=$KUBECONFIG_FILE
-                kubectl get svc resume-service -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null || true
-              ''', returnStdout: true).trim()
+              externalIP = sh(
+                script: '''
+                  export KUBECONFIG=$KUBECONFIG_FILE
+                  kubectl get svc resume-service -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null || true
+                ''',
+                returnStdout: true
+              ).trim()
 
-              if (externalIP?.trim()) {
+              if (externalIP) {
                 echo "✅ External IP assigned: ${externalIP}"
                 break
               } else {
@@ -83,7 +86,7 @@ pipeline {
               }
             }
 
-            if (!externalIP?.trim()) {
+            if (!externalIP) {
               error("❌ ERROR: External IP not assigned after 3 minutes. Aborting DNS update.")
             }
 
@@ -97,13 +100,13 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: 'dnsexit-api-key', variable: 'DNS_API_KEY')]) {
           sh '''
-            echo "🌐 Updating DNSExit for ${DNS_HOST} → ${RESUME_APP_EXTERNAL_IP}"
+            echo "🌐 Updating DNSExit for $DNS_HOST → $RESUME_APP_EXTERNAL_IP"
             curl -s -X POST "https://api.dnsexit.com/dns/ud/" \
-              -d "apikey=${DNS_API_KEY}" \
-              -d "host=${DNS_HOST}" \
-              -d "ip=${RESUME_APP_EXTERNAL_IP}"
+              -d "apikey=$DNS_API_KEY" \
+              -d "host=$DNS_HOST" \
+              -d "ip=$RESUME_APP_EXTERNAL_IP"
 
-            echo "✅ DNS updated: ${DNS_HOST} → ${RESUME_APP_EXTERNAL_IP}"
+            echo "✅ DNS updated: $DNS_HOST → $RESUME_APP_EXTERNAL_IP"
           '''
         }
       }
