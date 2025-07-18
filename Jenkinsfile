@@ -14,6 +14,7 @@ pipeline {
         git branch: 'main',
             credentialsId: 'github-credentials',
             url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
+
         script {
           env.IMAGE_TAG = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
         }
@@ -61,9 +62,10 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            # Update image tag in deployment file
+            # Update image in deployment manifest
             sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
 
+            echo "📦 Applying Kubernetes manifests..."
             kubectl apply -f k8s/cluster-issuer.yaml
             kubectl apply -f k8s/deployment.yaml
             kubectl apply -f k8s/service.yaml
@@ -74,7 +76,7 @@ pipeline {
               echo "⚠️ ingress.yaml not found. Skipping ingress setup."
             fi
 
-            # Wait for rollout to finish
+            # Rollout status
             if kubectl get deployment ${IMAGE_NAME}; then
               kubectl rollout status deployment/${IMAGE_NAME}
             else
@@ -94,18 +96,23 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            echo "🌐 Fetching external IP of the AKS LoadBalancer service..."
-            AKS_EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-            echo "✅ Found AKS External IP: $AKS_EXTERNAL_IP"
+            echo "🌐 Fetching External IP of AKS LoadBalancer service..."
+            EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            echo "Found External IP: $EXTERNAL_IP"
 
-            echo "🔁 Updating DNSExit (resumebuilder.publicvm.com) with AKS external IP..."
+            if [ -z "$EXTERNAL_IP" ]; then
+              echo "❌ Could not retrieve External IP. Exiting..."
+              exit 1
+            fi
+
+            echo "🔁 Updating DNSExit record to $EXTERNAL_IP..."
 
             curl -X POST "https://api.dnsexit.com/dns/ud/" \
               -d "apikey=$DNS_API_KEY" \
               -d "host=resumebuilder.publicvm.com" \
-              -d "ip=$AKS_EXTERNAL_IP"
+              -d "ip=$EXTERNAL_IP"
 
-            echo "✅ DNS updated successfully to AKS IP: $AKS_EXTERNAL_IP"
+            echo "✅ DNS record updated successfully."
           '''
         }
       }
@@ -114,10 +121,10 @@ pipeline {
 
   post {
     failure {
-      echo '🚨 Pipeline failed! Check logs for details.'
+      echo '🚨 Pipeline failed! Check logs for errors.'
     }
     success {
-      echo '✅ Deployment to AKS successful and DNS updated!'
+      echo '✅ Deployment successful and DNS updated to AKS IP!'
     }
   }
 }
