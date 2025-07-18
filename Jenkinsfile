@@ -68,7 +68,6 @@ pipeline {
             kubectl apply -f k8s/deployment.yaml
             kubectl apply -f k8s/service.yaml
 
-            # Optional: apply ingress if present
             if [ -f k8s/ingress.yaml ]; then
               kubectl apply -f k8s/ingress.yaml
             else
@@ -85,6 +84,32 @@ pipeline {
         }
       }
     }
+
+    stage('Update DNSExit Record') {
+      steps {
+        withCredentials([
+          file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE'),
+          string(credentialsId: 'dnsexit-api-key', variable: 'DNS_API_KEY')
+        ]) {
+          sh '''
+            export KUBECONFIG=$KUBECONFIG_FILE
+
+            echo "🌐 Fetching external IP of the LoadBalancer..."
+            EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            echo "Found External IP: $EXTERNAL_IP"
+
+            echo "🔁 Updating DNSExit record resumebuilder.publicvm.com with new IP..."
+
+            curl -X POST "https://api.dnsexit.com/dns/ud/" \
+              -d "apikey=$DNS_API_KEY" \
+              -d "host=resumebuilder.publicvm.com" \
+              -d "ip=$EXTERNAL_IP"
+
+            echo "✅ DNS record updated."
+          '''
+        }
+      }
+    }
   }
 
   post {
@@ -92,7 +117,7 @@ pipeline {
       echo '🚨 Pipeline failed! Check logs for details.'
     }
     success {
-      echo '✅ Deployment to AKS successful!'
+      echo '✅ Deployment to AKS successful and DNS updated!'
     }
   }
 }
