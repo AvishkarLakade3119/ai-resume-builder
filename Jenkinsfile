@@ -15,7 +15,6 @@ pipeline {
         git branch: 'main',
             credentialsId: 'github-credentials',
             url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
-
         script {
           env.IMAGE_TAG = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
         }
@@ -40,12 +39,12 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            echo "🔍 Verifying cluster..."
+            echo "🔍 Verifying AKS cluster connectivity..."
             kubectl config current-context
             kubectl get nodes
             kubectl wait node --all --for=condition=Ready --timeout=180s
 
-            echo "📦 Updating deployment..."
+            echo "📦 Updating deployment image tag..."
             sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
 
             kubectl apply -f k8s/cluster-issuer.yaml || true
@@ -63,38 +62,48 @@ pipeline {
       }
     }
 
+    stage('Wait for External IP') {
+      steps {
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+          script {
+            def maxRetries = 12  // 12 × 15s = 3 minutes
+            def externalIP = ""
+            for (int i = 1; i <= maxRetries; i++) {
+              externalIP = sh(script: '''
+                export KUBECONFIG=$KUBECONFIG_FILE
+                kubectl get svc resume-service -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null || true
+              ''', returnStdout: true).trim()
+
+              if (externalIP?.trim()) {
+                echo "✅ External IP assigned: ${externalIP}"
+                break
+              } else {
+                echo "🔄 Attempt ${i}/${maxRetries}: Waiting for external IP..."
+                sleep 15
+              }
+            }
+
+            if (!externalIP?.trim()) {
+              error("❌ ERROR: External IP not assigned after 3 minutes. Aborting DNS update.")
+            }
+
+            env.RESUME_APP_EXTERNAL_IP = externalIP
+          }
+        }
+      }
+    }
+
     stage('Update DNSExit') {
       steps {
-        withCredentials([
-          file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE'),
-          string(credentialsId: 'dnsexit-api-key', variable: 'DNS_API_KEY')
-        ]) {
+        withCredentials([string(credentialsId: 'dnsexit-api-key', variable: 'DNS_API_KEY')]) {
           sh '''
-            export KUBECONFIG=$KUBECONFIG_FILE
-
-            echo "🌐 Fetching external IP of resume-service..."
-            for i in {1..10}; do
-              EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
-              if [ ! -z "$EXTERNAL_IP" ]; then
-                echo "✅ Found External IP: $EXTERNAL_IP"
-                break
-              fi
-              echo "🔁 Retry $i: Waiting for external IP..."
-              sleep 15
-            done
-
-            if [ -z "$EXTERNAL_IP" ]; then
-              echo "❌ ERROR: LoadBalancer IP not assigned. DNS update skipped."
-              exit 1
-            fi
-
-            echo "🔁 Updating DNS record at DNSExit..."
+            echo "🌐 Updating DNSExit for ${DNS_HOST} → ${RESUME_APP_EXTERNAL_IP}"
             curl -s -X POST "https://api.dnsexit.com/dns/ud/" \
               -d "apikey=${DNS_API_KEY}" \
               -d "host=${DNS_HOST}" \
-              -d "ip=${EXTERNAL_IP}"
+              -d "ip=${RESUME_APP_EXTERNAL_IP}"
 
-            echo "✅ DNS record updated to $EXTERNAL_IP"
+            echo "✅ DNS updated: ${DNS_HOST} → ${RESUME_APP_EXTERNAL_IP}"
           '''
         }
       }
@@ -103,10 +112,10 @@ pipeline {
 
   post {
     success {
-      echo '✅ SUCCESS: Deployed to AKS and DNS updated.'
+      echo '✅ Deployment complete, DNS updated successfully.'
     }
     failure {
-      echo '❌ FAILURE: Check error logs.'
+      echo '❌ Deployment failed. Check the logs above.'
     }
   }
 }
