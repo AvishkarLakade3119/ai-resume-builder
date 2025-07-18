@@ -6,6 +6,7 @@ pipeline {
     IMAGE_NAME = 'resume-app'
     RESOURCE_GROUP = 'poona_student'
     CLUSTER_NAME = 'resumeCluster'
+    DNS_HOST = 'resumebuilder.publicvm.com'
   }
 
   stages {
@@ -32,7 +33,7 @@ pipeline {
     stage('Scan Docker Image with Trivy') {
       steps {
         sh '''
-          echo "🔍 Running Trivy scan..."
+          echo "🔍 Scanning image..."
           trivy image --exit-code 0 --severity MEDIUM,HIGH,CRITICAL ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
         '''
       }
@@ -48,7 +49,7 @@ pipeline {
       }
     }
 
-    stage('Push Image to ACR') {
+    stage('Push Docker Image') {
       steps {
         sh '''
           docker push ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
@@ -62,38 +63,32 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            echo "📄 Checking kube context..."
-            kubectl config current-context || { echo "❌ Invalid kubeconfig or context!"; exit 1; }
+            echo "✅ Verifying context and AKS readiness..."
+            kubectl config current-context
+            kubectl get nodes
 
-            echo "⏳ Waiting for AKS nodes to become Ready..."
-            kubectl wait --for=condition=Ready nodes --timeout=180s || {
-              echo "❌ AKS nodes not ready!"; exit 1;
-            }
+            echo "⏳ Waiting for nodes..."
+            kubectl wait --for=condition=Ready nodes --timeout=180s
 
-            echo "🔧 Updating image tag in deployment.yaml..."
+            echo "🛠 Updating deployment image..."
             sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
 
-            echo "🚀 Applying manifests to AKS..."
             kubectl apply -f k8s/cluster-issuer.yaml || true
             kubectl apply -f k8s/deployment.yaml
             kubectl apply -f k8s/service.yaml
 
             if [ -f k8s/ingress.yaml ]; then
               kubectl apply -f k8s/ingress.yaml
-            else
-              echo "⚠️ No ingress.yaml found. Skipping..."
             fi
 
             echo "📦 Waiting for deployment rollout..."
-            kubectl rollout status deployment/${IMAGE_NAME} --timeout=180s || {
-              echo "❌ Deployment rollout failed"; exit 1;
-            }
+            kubectl rollout status deployment/${IMAGE_NAME} --timeout=180s
           '''
         }
       }
     }
 
-    stage('Update DNSExit Record') {
+    stage('Update DNSExit with AKS IP') {
       steps {
         withCredentials([
           file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE'),
@@ -101,32 +96,33 @@ pipeline {
         ]) {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
+            echo "🌐 Waiting for AKS LoadBalancer External IP..."
 
-            echo "🌐 Getting AKS LoadBalancer External IP..."
-            EXTERNAL_IP=""
+            # Wait for IP with retry
             for i in {1..10}; do
-              EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-              if [ -n "$EXTERNAL_IP" ]; then
+              EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || echo "")
+              if [ ! -z "$EXTERNAL_IP" ]; then
                 break
               fi
-              echo "⏳ Waiting for External IP to be assigned... ($i)"
+              echo "🔄 Attempt $i: Still waiting for external IP..."
               sleep 15
             done
 
             if [ -z "$EXTERNAL_IP" ]; then
-              echo "❌ Failed to fetch External IP. Skipping DNS update."
+              echo "❌ AKS LoadBalancer External IP not available. Exiting."
               exit 1
             fi
 
             echo "✅ Found External IP: $EXTERNAL_IP"
 
-            echo "🔁 Updating DNSExit with AKS IP..."
-            curl -X POST "https://api.dnsexit.com/dns/ud/" \
+            echo "🌐 Updating DNSExit..."
+            RESPONSE=$(curl -s -X POST "https://api.dnsexit.com/dns/ud/" \
               -d "apikey=$DNS_API_KEY" \
-              -d "host=resumebuilder.publicvm.com" \
-              -d "ip=$EXTERNAL_IP"
+              -d "host=$DNS_HOST" \
+              -d "ip=$EXTERNAL_IP")
 
-            echo "✅ DNS record updated to point to $EXTERNAL_IP"
+            echo "📨 DNSExit response: $RESPONSE"
+            echo "✅ DNS update completed for $DNS_HOST → $EXTERNAL_IP"
           '''
         }
       }
@@ -134,11 +130,11 @@ pipeline {
   }
 
   post {
-    failure {
-      echo '🚨 Pipeline failed! Check logs for errors.'
-    }
     success {
-      echo '✅ Deployment and DNS update completed successfully!'
+      echo "🎉 All steps completed: AKS deployed & DNS updated!"
+    }
+    failure {
+      echo "❌ Pipeline failed. Check logs above for details."
     }
   }
 }
