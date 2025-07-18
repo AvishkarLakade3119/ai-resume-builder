@@ -2,14 +2,15 @@ pipeline {
   agent any
 
   environment {
-    ACR_NAME = 'avishkarairesume'
-    IMAGE_NAME = 'resume-app'
+    ACR_NAME     = 'avishkarairesume'
+    IMAGE_NAME   = 'resume-app'
     RESOURCE_GROUP = 'poona_student'
-    CLUSTER_NAME = 'resumeCluster'
-    DNS_HOST = 'resumebuilder.publicvm.com'
+    CLUSTER_NAME   = 'resumeCluster'
+    DNS_HOST     = 'resumebuilder.publicvm.com'
   }
 
   stages {
+
     stage('Checkout') {
       steps {
         git branch: 'main',
@@ -30,10 +31,9 @@ pipeline {
       }
     }
 
-    stage('Scan Docker Image with Trivy') {
+    stage('Scan Docker Image') {
       steps {
         sh '''
-          echo "🔍 Scanning image..."
           trivy image --exit-code 0 --severity MEDIUM,HIGH,CRITICAL ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
         '''
       }
@@ -63,16 +63,15 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            echo "✅ Verifying context and AKS readiness..."
+            echo "📌 Verifying AKS connection..."
             kubectl config current-context
             kubectl get nodes
-
-            echo "⏳ Waiting for nodes..."
             kubectl wait --for=condition=Ready nodes --timeout=180s
 
-            echo "🛠 Updating deployment image..."
+            echo "🛠 Updating deployment.yaml with new image tag..."
             sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
 
+            echo "🚀 Applying manifests..."
             kubectl apply -f k8s/cluster-issuer.yaml || true
             kubectl apply -f k8s/deployment.yaml
             kubectl apply -f k8s/service.yaml
@@ -81,14 +80,14 @@ pipeline {
               kubectl apply -f k8s/ingress.yaml
             fi
 
-            echo "📦 Waiting for deployment rollout..."
+            echo "⏳ Waiting for deployment rollout..."
             kubectl rollout status deployment/${IMAGE_NAME} --timeout=180s
           '''
         }
       }
     }
 
-    stage('Update DNSExit with AKS IP') {
+    stage('Update DNSExit') {
       steps {
         withCredentials([
           file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE'),
@@ -96,33 +95,30 @@ pipeline {
         ]) {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
-            echo "🌐 Waiting for AKS LoadBalancer External IP..."
 
-            # Wait for IP with retry
+            echo "🔍 Fetching AKS LoadBalancer external IP..."
+            EXTERNAL_IP=""
             for i in {1..10}; do
-              EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || echo "")
+              EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
               if [ ! -z "$EXTERNAL_IP" ]; then
                 break
               fi
-              echo "🔄 Attempt $i: Still waiting for external IP..."
+              echo "Waiting for external IP... Attempt $i"
               sleep 15
             done
 
             if [ -z "$EXTERNAL_IP" ]; then
-              echo "❌ AKS LoadBalancer External IP not available. Exiting."
+              echo "❌ External IP not available. Skipping DNS update."
               exit 1
             fi
 
-            echo "✅ Found External IP: $EXTERNAL_IP"
-
-            echo "🌐 Updating DNSExit..."
+            echo "🌐 Updating DNSExit for $DNS_HOST to IP $EXTERNAL_IP"
             RESPONSE=$(curl -s -X POST "https://api.dnsexit.com/dns/ud/" \
               -d "apikey=$DNS_API_KEY" \
               -d "host=$DNS_HOST" \
               -d "ip=$EXTERNAL_IP")
 
             echo "📨 DNSExit response: $RESPONSE"
-            echo "✅ DNS update completed for $DNS_HOST → $EXTERNAL_IP"
           '''
         }
       }
@@ -131,10 +127,10 @@ pipeline {
 
   post {
     success {
-      echo "🎉 All steps completed: AKS deployed & DNS updated!"
+      echo "✅ SUCCESS: Deployed to AKS and DNS updated!"
     }
     failure {
-      echo "❌ Pipeline failed. Check logs above for details."
+      echo "❌ ERROR: Pipeline failed. Check logs for details."
     }
   }
 }
