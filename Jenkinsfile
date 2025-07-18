@@ -94,18 +94,18 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            echo "🌐 Fetching external IP of the LoadBalancer..."
-            EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-            echo "Found External IP: $EXTERNAL_IP"
+            echo "🌐 Fetching external IP of the AKS LoadBalancer service..."
+            AKS_EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            echo "✅ Found AKS External IP: $AKS_EXTERNAL_IP"
 
-            echo "🔁 Updating DNSExit record resumebuilder.publicvm.com with new IP..."
+            echo "🔁 Updating DNSExit (resumebuilder.publicvm.com) with AKS external IP..."
 
             curl -X POST "https://api.dnsexit.com/dns/ud/" \
               -d "apikey=$DNS_API_KEY" \
               -d "host=resumebuilder.publicvm.com" \
-              -d "ip=$EXTERNAL_IP"
+              -d "ip=$AKS_EXTERNAL_IP"
 
-            echo "✅ DNS record updated."
+            echo "✅ DNS updated successfully to AKS IP: $AKS_EXTERNAL_IP"
           '''
         }
       }
