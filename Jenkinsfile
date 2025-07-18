@@ -10,7 +10,6 @@ pipeline {
   }
 
   stages {
-
     stage('Checkout') {
       steps {
         git branch: 'main',
@@ -23,37 +22,15 @@ pipeline {
       }
     }
 
-    stage('Build Docker Image') {
-      steps {
-        sh '''
-          docker build -t ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG} .
-        '''
-      }
-    }
-
-    stage('Scan Docker Image') {
-      steps {
-        sh '''
-          trivy image --exit-code 0 --severity MEDIUM,HIGH,CRITICAL ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
-        '''
-      }
-    }
-
-    stage('Login to ACR') {
+    stage('Build & Push Docker Image') {
       steps {
         withCredentials([usernamePassword(credentialsId: 'acr-credentials', usernameVariable: 'ACR_USERNAME', passwordVariable: 'ACR_PASSWORD')]) {
           sh '''
+            docker build -t ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG} .
             echo $ACR_PASSWORD | docker login ${ACR_NAME}.azurecr.io -u $ACR_USERNAME --password-stdin
+            docker push ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
           '''
         }
-      }
-    }
-
-    stage('Push Docker Image') {
-      steps {
-        sh '''
-          docker push ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
-        '''
       }
     }
 
@@ -63,15 +40,12 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            echo "📌 Verifying AKS connection..."
             kubectl config current-context
             kubectl get nodes
             kubectl wait --for=condition=Ready nodes --timeout=180s
 
-            echo "🛠 Updating deployment.yaml with new image tag..."
             sed -i "s|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:.*|image: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
 
-            echo "🚀 Applying manifests..."
             kubectl apply -f k8s/cluster-issuer.yaml || true
             kubectl apply -f k8s/deployment.yaml
             kubectl apply -f k8s/service.yaml
@@ -80,7 +54,6 @@ pipeline {
               kubectl apply -f k8s/ingress.yaml
             fi
 
-            echo "⏳ Waiting for deployment rollout..."
             kubectl rollout status deployment/${IMAGE_NAME} --timeout=180s
           '''
         }
@@ -96,29 +69,28 @@ pipeline {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
 
-            echo "🔍 Fetching AKS LoadBalancer external IP..."
-            EXTERNAL_IP=""
+            echo "⏳ Waiting for LoadBalancer external IP..."
             for i in {1..10}; do
               EXTERNAL_IP=$(kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
               if [ ! -z "$EXTERNAL_IP" ]; then
+                echo "✅ Found External IP: $EXTERNAL_IP"
                 break
               fi
-              echo "Waiting for external IP... Attempt $i"
+              echo "🔄 Waiting for external IP... ($i/10)"
               sleep 15
             done
 
             if [ -z "$EXTERNAL_IP" ]; then
-              echo "❌ External IP not available. Skipping DNS update."
+              echo "❌ ERROR: AKS External IP was not assigned. DNS update skipped."
               exit 1
             fi
 
-            echo "🌐 Updating DNSExit for $DNS_HOST to IP $EXTERNAL_IP"
-            RESPONSE=$(curl -s -X POST "https://api.dnsexit.com/dns/ud/" \
-              -d "apikey=$DNS_API_KEY" \
-              -d "host=$DNS_HOST" \
-              -d "ip=$EXTERNAL_IP")
+            echo "🌐 Updating DNS record for ${DNS_HOST} to $EXTERNAL_IP"
 
-            echo "📨 DNSExit response: $RESPONSE"
+            curl -s -X POST "https://api.dnsexit.com/dns/ud/" \
+              -d "apikey=${DNS_API_KEY}" \
+              -d "host=${DNS_HOST}" \
+              -d "ip=${EXTERNAL_IP}"
           '''
         }
       }
@@ -127,10 +99,10 @@ pipeline {
 
   post {
     success {
-      echo "✅ SUCCESS: Deployed to AKS and DNS updated!"
+      echo '✅ SUCCESS: Application deployed and DNS updated!'
     }
     failure {
-      echo "❌ ERROR: Pipeline failed. Check logs for details."
+      echo '❌ FAILURE: Check error messages in logs above.'
     }
   }
 }
