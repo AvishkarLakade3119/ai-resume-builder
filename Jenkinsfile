@@ -47,6 +47,7 @@ pipeline {
             echo "📦 Updating deployment image tag..."
             sed -i "s|image: $ACR_NAME.azurecr.io/$IMAGE_NAME:.*|image: $ACR_NAME.azurecr.io/$IMAGE_NAME:$IMAGE_TAG|g" k8s/deployment.yaml
 
+            echo "🚀 Applying Kubernetes manifests..."
             kubectl apply -f k8s/cluster-issuer.yaml || true
             kubectl apply -f k8s/deployment.yaml
             kubectl apply -f k8s/service.yaml
@@ -111,11 +112,23 @@ pipeline {
         }
       }
     }
+
+    stage('Apply SSL Certificate') {
+      steps {
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+          sh '''
+            export KUBECONFIG=$KUBECONFIG_FILE
+            echo "🔐 Applying certificate.yaml to request HTTPS..."
+            kubectl apply -f k8s/certificate.yaml
+          '''
+        }
+      }
+    }
   }
 
   post {
     success {
-      echo '✅ Deployment complete, DNS updated successfully.'
+      echo '✅ Deployment complete, DNS updated, and HTTPS requested successfully!'
     }
     failure {
       echo '❌ Deployment failed. Check the logs above.'
