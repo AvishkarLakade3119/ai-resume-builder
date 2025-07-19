@@ -2,78 +2,67 @@ pipeline {
   agent any
 
   environment {
-    DOCKER_IMAGE = "avishkarlakade/ai-resume-builder:latest"
-    DOMAIN_NAME = "resuemebuilder.publicvm.com"
+    // DockerHub credentials
+    DOCKER_CREDENTIALS = credentials('dockerhub-credentials')
+    // Kubeconfig file for kubectl
+    KUBECONFIG_FILE = credentials('kubeconfig')
+    // Image details
+    IMAGE_NAME = "avishkarlakade/ai-resume-builder"
+    IMAGE_TAG = "${env.BUILD_NUMBER}"
   }
 
   stages {
-    stage('Clone Repo') {
+    stage('Checkout Source') {
       steps {
-        git 'https://github.com/AvishkarLakade3119/ai-resume-builder.git'
+        checkout scm
       }
     }
 
-    stage('Build Docker Image') {
+    stage('Docker Build') {
       steps {
-        sh 'docker build -t $DOCKER_IMAGE .'
-      }
-    }
-
-    stage('Push to DockerHub') {
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-          sh '''
-            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-            docker push $DOCKER_IMAGE
-          '''
+        script {
+          sh """
+            docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+          """
         }
       }
     }
 
-    stage('Configure kubeconfig') {
+    stage('Docker Login & Push') {
       steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          sh '''
-            export KUBECONFIG=$KUBECONFIG_FILE
-            kubectl config use-context minikube
-          '''
+        script {
+          sh """
+            echo "${DOCKER_CREDENTIALS_PSW}" | docker login -u "${DOCKER_CREDENTIALS_USR}" --password-stdin
+            docker push ${IMAGE_NAME}:${IMAGE_TAG}
+          """
         }
       }
     }
 
-    stage('Deploy to Minikube') {
+    stage('Deploy to Kubernetes') {
       steps {
-        sh '''
-          kubectl apply -f k8s/deployment.yaml
-          kubectl apply -f k8s/service.yaml
-        '''
-      }
-    }
-
-    stage('Get Minikube External IP & Update DNS') {
-      steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE'),
-                         string(credentialsId: 'dnsexit-api-key', variable: 'EXITDNS_KEY')]) {
-          script {
-            def serviceUrl = ""
-            timeout(time: 2, unit: 'MINUTES') {
-              waitUntil {
-                serviceUrl = sh(script: "minikube service resume-builder-service --url | tail -1", returnStdout: true).trim()
-                return serviceUrl != ""
-              }
-            }
-
-            echo "Service URL: ${serviceUrl}"
-            def ipOnly = serviceUrl.replaceFirst(/^https?:\\/\\//, "").split(":")[0]
-
-            echo "Resolved IP: ${ipOnly}"
-
-            sh """
-              curl -s "https://api.exitdns.com/nic/update?hostname=$DOMAIN_NAME&myip=${ipOnly}&apikey=$EXITDNS_KEY"
-            """
-          }
+        withEnv(["KUBECONFIG=$KUBECONFIG_FILE"]) {
+          // Optionally update image if already deployed
+          sh """
+            kubectl apply -f k8s/
+            # OR: uncomment the below if you just want to update the image in a running deployment
+            # kubectl set image deployment/ai-resume-builder ai-resume-builder=${IMAGE_NAME}:${IMAGE_TAG} --record
+          """
         }
       }
+    }
+  }
+
+  post {
+    success {
+      echo "✅ Successfully built and deployed: ${IMAGE_NAME}:${IMAGE_TAG}"
+    }
+    failure {
+      echo "❌ Build or deployment failed!"
+    }
+    always {
+      cleanWs()
+      sh 'docker image prune -f'
     }
   }
 }
