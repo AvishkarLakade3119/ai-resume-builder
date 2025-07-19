@@ -15,6 +15,7 @@ pipeline {
         git branch: 'main',
             credentialsId: 'github-credentials',
             url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
+
         script {
           env.IMAGE_TAG = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
         }
@@ -48,7 +49,6 @@ pipeline {
             sed -i "s|image: .*|image: $REPO_NAME:$IMAGE_TAG|g" k8s/deployment.yaml
 
             echo "🚀 Applying Kubernetes resources..."
-            kubectl apply -f k8s/cluster-issuer.yaml || true
             kubectl apply -f k8s/deployment.yaml
             kubectl apply -f k8s/service.yaml
             [ -f k8s/ingress.yaml ] && kubectl apply -f k8s/ingress.yaml
@@ -98,7 +98,7 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: 'dnsexit-api-key', variable: 'DNS_API_KEY')]) {
           sh '''
-            echo "🌐 Updating DNS: $DNS_HOST → $RESUME_APP_EXTERNAL_IP"
+            echo "🌐 Updating DNSExit: $DNS_HOST → $RESUME_APP_EXTERNAL_IP"
             curl -s -X POST "https://api.dnsexit.com/dns/ud/" \
               -d "apikey=$DNS_API_KEY" \
               -d "host=$DNS_HOST" \
@@ -125,7 +125,7 @@ pipeline {
 
   post {
     success {
-      echo '✅ Deployment complete: DockerHub → Minikube → DNS → SSL'
+      echo '✅ Deployment complete: DockerHub → Minikube → DNSExit → SSL'
     }
     failure {
       echo '❌ Pipeline failed. Please check the logs above.'
