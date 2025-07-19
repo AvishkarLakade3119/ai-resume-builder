@@ -14,6 +14,6 @@ spec:
     spec:
       containers:
         - name: resume-builder
-          image: avishkarlakade/resume-builder:latest
+          image: avishkarlakade/ai-resume-builder:latest
           ports:
             - containerPort: 3000
