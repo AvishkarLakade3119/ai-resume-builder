@@ -14,8 +14,6 @@ spec:
     spec:
       containers:
         - name: resume-container
-          image: avishkarairesume.azurecr.io/resume-app:IMAGE_TAG
+          image: resume-app:latest  # <-- Update this if using DockerHub
           ports:
             - containerPort: 3000
-      imagePullSecrets:
-        - name: acr-secret
