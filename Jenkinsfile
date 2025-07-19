@@ -2,38 +2,40 @@ pipeline {
   agent any
 
   environment {
-    DOCKERHUB_USER = 'avishkarlakade'
-    IMAGE_NAME     = 'resume-app'
-    REPO_NAME      = "${DOCKERHUB_USER}/${IMAGE_NAME}"
-    DNS_HOST       = 'resumebuilder.publicvm.com'
+    DOCKER_IMAGE = "avishkarlakade/ai-resume-builder:latest"
+    DOMAIN_NAME = "resuemebuilder.publicvm.com"
   }
 
   stages {
-
-    stage('Checkout Source') {
+    stage('Clone Repo') {
       steps {
-        git branch: 'main',
-            credentialsId: 'github-credentials',
-            url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
+        git 'https://github.com/AvishkarLakade3119/ai-resume-builder.git'
+      }
+    }
 
-        script {
-          env.IMAGE_TAG = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+    stage('Build Docker Image') {
+      steps {
+        sh 'docker build -t $DOCKER_IMAGE .'
+      }
+    }
+
+    stage('Push to DockerHub') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+          sh '''
+            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+            docker push $DOCKER_IMAGE
+          '''
         }
       }
     }
 
-    stage('Build & Push Docker Image') {
+    stage('Configure kubeconfig') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKERHUB_USER', passwordVariable: 'DOCKERHUB_PASS')]) {
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
           sh '''
-            echo "🛠️ Building Docker image..."
-            docker build -t $REPO_NAME:$IMAGE_TAG .
-
-            echo "🔐 Logging into Docker Hub..."
-            echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin
-
-            echo "📦 Pushing image to Docker Hub..."
-            docker push $REPO_NAME:$IMAGE_TAG
+            export KUBECONFIG=$KUBECONFIG_FILE
+            kubectl config use-context minikube
           '''
         }
       }
@@ -41,94 +43,37 @@ pipeline {
 
     stage('Deploy to Minikube') {
       steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          sh '''
-            export KUBECONFIG=$KUBECONFIG_FILE
-
-            echo "🔧 Updating image in deployment..."
-            sed -i "s|image: .*|image: $REPO_NAME:$IMAGE_TAG|g" k8s/deployment.yaml
-
-            echo "🚀 Applying Kubernetes resources..."
-            kubectl apply -f k8s/deployment.yaml
-            kubectl apply -f k8s/service.yaml
-            [ -f k8s/ingress.yaml ] && kubectl apply -f k8s/ingress.yaml
-
-            echo "⏳ Waiting for rollout to complete..."
-            kubectl rollout status deployment/$IMAGE_NAME --timeout=180s
-          '''
-        }
+        sh '''
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+        '''
       }
     }
 
-    stage('Wait for External IP') {
+    stage('Get Minikube External IP & Update DNS') {
       steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE'),
+                         string(credentialsId: 'dnsexit-api-key', variable: 'EXITDNS_KEY')]) {
           script {
-            def maxRetries = 12
-            def externalIP = ""
-            for (int i = 1; i <= maxRetries; i++) {
-              externalIP = sh(
-                script: '''
-                  export KUBECONFIG=$KUBECONFIG_FILE
-                  kubectl get svc resume-service -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null || true
-                ''',
-                returnStdout: true
-              ).trim()
-
-              if (externalIP) {
-                echo "✅ External IP assigned: ${externalIP}"
-                break
-              } else {
-                echo "🔄 Attempt ${i}/${maxRetries}: Waiting for external IP..."
-                sleep 15
+            def serviceUrl = ""
+            timeout(time: 2, unit: 'MINUTES') {
+              waitUntil {
+                serviceUrl = sh(script: "minikube service resume-builder-service --url | tail -1", returnStdout: true).trim()
+                return serviceUrl != ""
               }
             }
 
-            if (!externalIP) {
-              error("❌ ERROR: External IP not assigned after 3 minutes.")
-            }
+            echo "Service URL: ${serviceUrl}"
+            def ipOnly = serviceUrl.replaceFirst(/^https?:\\/\\//, "").split(":")[0]
 
-            env.RESUME_APP_EXTERNAL_IP = externalIP
+            echo "Resolved IP: ${ipOnly}"
+
+            sh """
+              curl -s "https://api.exitdns.com/nic/update?hostname=$DOMAIN_NAME&myip=${ipOnly}&apikey=$EXITDNS_KEY"
+            """
           }
         }
       }
-    }
-
-    stage('Update DNS Record') {
-      steps {
-        withCredentials([string(credentialsId: 'dnsexit-api-key', variable: 'DNS_API_KEY')]) {
-          sh '''
-            echo "🌐 Updating DNSExit: $DNS_HOST → $RESUME_APP_EXTERNAL_IP"
-            curl -s -X POST "https://api.dnsexit.com/dns/ud/" \
-              -d "apikey=$DNS_API_KEY" \
-              -d "host=$DNS_HOST" \
-              -d "ip=$RESUME_APP_EXTERNAL_IP"
-
-            echo "✅ DNS record updated!"
-          '''
-        }
-      }
-    }
-
-    stage('Apply SSL Certificate') {
-      steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          sh '''
-            export KUBECONFIG=$KUBECONFIG_FILE
-            echo "🔐 Applying certificate.yaml..."
-            kubectl apply -f k8s/certificate.yaml
-          '''
-        }
-      }
-    }
-  }
-
-  post {
-    success {
-      echo '✅ Deployment complete: DockerHub → Minikube → DNSExit → SSL'
-    }
-    failure {
-      echo '❌ Pipeline failed. Please check the logs above.'
     }
   }
 }
