@@ -1,106 +1,75 @@
 pipeline {
-  agent any
+    agent any
 
-  environment {
-    KUBECONFIG = credentials('kubeconfig')       // Your kubeconfig.yaml Jenkins credential ID
-    CF_API_TOKEN = credentials('cloudflare-token') // Cloudflare API Token (create a secret text credential)
-    CF_ZONE_ID = 'your-cloudflare-zone-id'
-    CF_RECORD_ID = 'your-cloudflare-record-id'
-    DNS_NAME = 'resume.yourdomain.com'
-    NODEPORT = '30080'
-  }
-
-  stages {
-    stage('Checkout') {
-      steps {
-        git 'https://github.com/avilakade/ai-resume-builder.git'
-      }
+    environment {
+        REGISTRY = "docker.io"
+        IMAGE_NAME = "avishkarlakade/resume-builder"
+        IMAGE_TAG = "latest"
+        KUBE_CONFIG = credentials('kubeconfig-cred') // Jenkins credential ID for kubeconfig
+        DOCKER_CREDENTIALS_ID = 'docker-hub-credentials' // Jenkins credential ID for Docker Hub
     }
 
-    stage('Build Docker Image') {
-      steps {
-        sh 'docker build -t ai-resume-builder .'
-      }
-    }
-
-    stage('Push Docker Image') {
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-          sh '''
-            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-            docker tag ai-resume-builder $DOCKER_USER/ai-resume-builder:latest
-            docker push $DOCKER_USER/ai-resume-builder:latest
-          '''
+    stages {
+        stage('Checkout') {
+            steps {
+                git credentialsId: 'github-credentials', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
+            }
         }
-      }
-    }
 
-    stage('Deploy to Kubernetes') {
-      steps {
-        sh '''
-        cat <<EOF | kubectl apply -f -
-        apiVersion: apps/v1
-        kind: Deployment
-        metadata:
-          name: ai-resume-builder
-        spec:
-          replicas: 1
-          selector:
-            matchLabels:
-              app: ai-resume-builder
-          template:
-            metadata:
-              labels:
-                app: ai-resume-builder
-            spec:
-              containers:
-              - name: resume
-                image: $DOCKER_USER/ai-resume-builder:latest
-                ports:
-                - containerPort: 3000
-        ---
-        apiVersion: v1
-        kind: Service
-        metadata:
-          name: ai-resume-builder-service
-        spec:
-          type: NodePort
-          selector:
-            app: ai-resume-builder
-          ports:
-            - port: 80
-              targetPort: 3000
-              nodePort: ${NODEPORT}
-        EOF
-        '''
-      }
-    }
-
-    stage('Get External IP') {
-      steps {
-        script {
-          def externalIP = sh(script: "kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type==\"ExternalIP\")].address}'", returnStdout: true).trim()
-          env.EXTERNAL_IP = externalIP
-          echo "External IP: ${externalIP}"
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    docker.build("${IMAGE_NAME}:${IMAGE_TAG}")
+                }
+            }
         }
-      }
-    }
 
-    stage('Update DNS via Cloudflare API') {
-      steps {
-        sh '''
-        curl -X PUT "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$CF_RECORD_ID" \
-        -H "Authorization: Bearer $CF_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        --data '{
-          "type": "A",
-          "name": "'"$DNS_NAME"'",
-          "content": "'"$EXTERNAL_IP"'",
-          "ttl": 120,
-          "proxied": false
-        }'
-        '''
-      }
+        stage('Login to Docker Hub') {
+            steps {
+                script {
+                    docker.withRegistry("https://${env.REGISTRY}", "${DOCKER_CREDENTIALS_ID}") {
+                        echo 'Logged in to Docker Hub'
+                    }
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    docker.image("${IMAGE_NAME}:${IMAGE_TAG}").push()
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes (NodePort)') {
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig-cred', variable: 'KUBECONFIG')]) {
+                    sh '''
+                        export KUBECONFIG=$KUBECONFIG
+
+                        kubectl apply -f k8s/deployment.yaml
+                        kubectl apply -f k8s/service.yaml
+                    '''
+                }
+            }
+        }
+
+        stage('Print NodePort & IP for DNS Mapping') {
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig-cred', variable: 'KUBECONFIG')]) {
+                    sh '''
+                        export KUBECONFIG=$KUBECONFIG
+
+                        echo "🔗 External Access Info:"
+                        NODE_PORT=$(kubectl get svc resume-builder-service -o jsonpath="{.spec.ports[0].nodePort}")
+                        NODE_IP=$(kubectl get nodes -o jsonpath="{.items[0].status.addresses[?(@.type=='InternalIP')].address}")
+
+                        echo "Access your app at: http://$NODE_IP:$NODE_PORT"
+                        echo "✅ Now go to your DNS provider (e.g., GoDaddy/Cloudflare) and point your domain/subdomain A record to $NODE_IP"
+                    '''
+                }
+            }
+        }
     }
-  }
 }
