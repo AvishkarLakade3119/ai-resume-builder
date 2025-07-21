@@ -2,15 +2,14 @@ pipeline {
     agent any
 
     environment {
-        REGISTRY = "docker.io"
-        IMAGE_NAME = "avishkarlakade/resume-builder"
-        IMAGE_TAG = "latest"
-        KUBE_CONFIG = credentials('kubeconfig-cred') // Jenkins credential ID for kubeconfig
-        DOCKER_CREDENTIALS_ID = 'docker-hub-credentials' // Jenkins credential ID for Docker Hub
+        DOCKER_IMAGE = "avilakade/ai-resume-builder"
+        DOCKER_TAG = "latest"
+        KUBE_CONFIG_CREDENTIAL_ID = 'kubeconfig-cred'
+        DOCKER_CREDENTIALS_ID = 'dockerhub-credentials'
     }
 
     stages {
-        stage('Checkout') {
+        stage('Clone Code') {
             steps {
                 git credentialsId: 'github-credentials', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
             }
@@ -18,58 +17,74 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                script {
-                    docker.build("${IMAGE_NAME}:${IMAGE_TAG}")
-                }
+                sh 'docker build -t $DOCKER_IMAGE:$DOCKER_TAG .'
             }
         }
 
-        stage('Login to Docker Hub') {
+        stage('Push to DockerHub') {
             steps {
-                script {
-                    docker.withRegistry("https://${env.REGISTRY}", "${DOCKER_CREDENTIALS_ID}") {
-                        echo 'Logged in to Docker Hub'
-                    }
-                }
-            }
-        }
-
-        stage('Push Docker Image') {
-            steps {
-                script {
-                    docker.image("${IMAGE_NAME}:${IMAGE_TAG}").push()
-                }
-            }
-        }
-
-        stage('Deploy to Kubernetes (NodePort)') {
-            steps {
-                withCredentials([file(credentialsId: 'kubeconfig-cred', variable: 'KUBECONFIG')]) {
+                withCredentials([usernamePassword(credentialsId: "$DOCKER_CREDENTIALS_ID", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                     sh '''
-                        export KUBECONFIG=$KUBECONFIG
-
-                        kubectl apply -f k8s/deployment.yaml
-                        kubectl apply -f k8s/service.yaml
+                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                        docker push $DOCKER_IMAGE:$DOCKER_TAG
                     '''
                 }
             }
         }
 
-        stage('Print NodePort & IP for DNS Mapping') {
+        stage('Deploy to Kubernetes') {
             steps {
-                withCredentials([file(credentialsId: 'kubeconfig-cred', variable: 'KUBECONFIG')]) {
+                withCredentials([file(credentialsId: "${KUBE_CONFIG_CREDENTIAL_ID}", variable: 'KUBECONFIG')]) {
                     sh '''
-                        export KUBECONFIG=$KUBECONFIG
+                    cat <<EOF | kubectl apply -f -
+                    apiVersion: apps/v1
+                    kind: Deployment
+                    metadata:
+                      name: resume-app
+                    spec:
+                      replicas: 1
+                      selector:
+                        matchLabels:
+                          app: resume
+                      template:
+                        metadata:
+                          labels:
+                            app: resume
+                        spec:
+                          containers:
+                          - name: resume-container
+                            image: $DOCKER_IMAGE:$DOCKER_TAG
+                            ports:
+                            - containerPort: 3000
+                    EOF
 
-                        echo "🔗 External Access Info:"
-                        NODE_PORT=$(kubectl get svc resume-builder-service -o jsonpath="{.spec.ports[0].nodePort}")
-                        NODE_IP=$(kubectl get nodes -o jsonpath="{.items[0].status.addresses[?(@.type=='InternalIP')].address}")
-
-                        echo "Access your app at: http://$NODE_IP:$NODE_PORT"
-                        echo "✅ Now go to your DNS provider (e.g., GoDaddy/Cloudflare) and point your domain/subdomain A record to $NODE_IP"
+                    cat <<EOF | kubectl apply -f -
+                    apiVersion: v1
+                    kind: Service
+                    metadata:
+                      name: resume-service
+                    spec:
+                      selector:
+                        app: resume
+                      ports:
+                      - protocol: TCP
+                        port: 80
+                        targetPort: 3000
+                        nodePort: 30080
+                      type: NodePort
+                    EOF
                     '''
                 }
             }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Pipeline completed successfully!'
+        }
+        failure {
+            echo '❌ Pipeline failed.'
         }
     }
 }
