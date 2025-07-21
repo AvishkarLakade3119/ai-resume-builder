@@ -2,81 +2,105 @@ pipeline {
   agent any
 
   environment {
-    DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
-    KUBECONFIG_FILE = credentials('kubeconfig')
-    DNSEXIT_API_KEY = credentials('dnsexit-api-key')
-    DOMAIN_NAME = "resumebuilder.publicvm.com"
+    KUBECONFIG = credentials('kubeconfig')       // Your kubeconfig.yaml Jenkins credential ID
+    CF_API_TOKEN = credentials('cloudflare-token') // Cloudflare API Token (create a secret text credential)
+    CF_ZONE_ID = 'your-cloudflare-zone-id'
+    CF_RECORD_ID = 'your-cloudflare-record-id'
+    DNS_NAME = 'resume.yourdomain.com'
+    NODEPORT = '30080'
   }
 
   stages {
-    stage('Build Docker Image') {
+    stage('Checkout') {
       steps {
-        script {
-          docker.build("avishkarlakade/ai-resume-builder:latest")
-        }
+        git 'https://github.com/avilakade/ai-resume-builder.git'
       }
     }
 
-    stage('Push Docker Image to DockerHub') {
+    stage('Build Docker Image') {
       steps {
-        script {
-          docker.withRegistry('https://index.docker.io/v1/', 'dockerhub-credentials') {
-            docker.image("avishkarlakade/ai-resume-builder:latest").push()
-          }
+        sh 'docker build -t ai-resume-builder .'
+      }
+    }
+
+    stage('Push Docker Image') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+          sh '''
+            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+            docker tag ai-resume-builder $DOCKER_USER/ai-resume-builder:latest
+            docker push $DOCKER_USER/ai-resume-builder:latest
+          '''
         }
       }
     }
 
     stage('Deploy to Kubernetes') {
       steps {
-        script {
-          withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_PATH')]) {
-            sh '''
-              mkdir -p ~/.kube
-              cp $KUBECONFIG_PATH ~/.kube/config
-              kubectl apply -f k8s/deployment.yaml
-              kubectl apply -f k8s/service.yaml
-            '''
-          }
-        }
+        sh '''
+        cat <<EOF | kubectl apply -f -
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: ai-resume-builder
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: ai-resume-builder
+          template:
+            metadata:
+              labels:
+                app: ai-resume-builder
+            spec:
+              containers:
+              - name: resume
+                image: $DOCKER_USER/ai-resume-builder:latest
+                ports:
+                - containerPort: 3000
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: ai-resume-builder-service
+        spec:
+          type: NodePort
+          selector:
+            app: ai-resume-builder
+          ports:
+            - port: 80
+              targetPort: 3000
+              nodePort: ${NODEPORT}
+        EOF
+        '''
       }
     }
 
-    stage('Wait for External IP and Update DNS') {
+    stage('Get External IP') {
       steps {
         script {
-          sh '''
-            echo "Waiting for External IP..."
-            EXTERNAL_IP=""
-            for i in {1..20}; do
-              EXTERNAL_IP=$(kubectl get svc ai-resume-builder-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-              if [ "$EXTERNAL_IP" != "" ]; then
-                break
-              fi
-              echo "Still waiting..."
-              sleep 10
-            done
-
-            if [ "$EXTERNAL_IP" = "" ]; then
-              echo "❌ Could not get External IP"
-              exit 1
-            fi
-
-            echo "✅ External IP: $EXTERNAL_IP"
-            echo "Updating DNSExit..."
-            curl -X GET "https://api.dnsexit.com/RemoteUpdate.sv?login=$DOMAIN_NAME&password=$DNSEXIT_API_KEY&host=$DOMAIN_NAME&myip=$EXTERNAL_IP"
-          '''
+          def externalIP = sh(script: "kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type==\"ExternalIP\")].address}'", returnStdout: true).trim()
+          env.EXTERNAL_IP = externalIP
+          echo "External IP: ${externalIP}"
         }
       }
     }
-  }
 
-  post {
-    success {
-      echo '✅ Deployment Successful and DNS Updated!'
-    }
-    failure {
-      echo '❌ Deployment Failed. Check the console for details.'
+    stage('Update DNS via Cloudflare API') {
+      steps {
+        sh '''
+        curl -X PUT "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$CF_RECORD_ID" \
+        -H "Authorization: Bearer $CF_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        --data '{
+          "type": "A",
+          "name": "'"$DNS_NAME"'",
+          "content": "'"$EXTERNAL_IP"'",
+          "ttl": 120,
+          "proxied": false
+        }'
+        '''
+      }
     }
   }
 }
