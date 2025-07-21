@@ -1,23 +1,12 @@
-# Use the official Node.js 20 image as the base
-FROM node:20-alpine
-
-# Set working directory
+# Dockerfile
+FROM node:18-alpine AS builder
 WORKDIR /app
-
-# Copy package.json and package-lock.json
-COPY package*.json ./
-
-# Install dependencies
-RUN npm install
-
-# Copy the rest of the application code
 COPY . .
-
-# Build the Next.js application
+RUN npm install
 RUN npm run build
 
-# Expose the port the app runs on
+FROM node:18-alpine
+WORKDIR /app
+COPY --from=builder /app ./
 EXPOSE 3000
-
-# Start the Next.js application
 CMD ["npm", "start"]
