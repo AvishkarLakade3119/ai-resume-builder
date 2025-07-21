@@ -3,19 +3,12 @@ pipeline {
 
   environment {
     DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
-    GITHUB_CREDENTIALS = credentials('github-credentials')
     KUBECONFIG_CREDENTIALS = credentials('kubeconfig')
     DNSEXIT_API_KEY = credentials('dnsexit-api-key')
     IMAGE_NAME = "avishkarlakade/ai-resume-builder"
   }
 
   stages {
-    stage('Clone Repo') {
-      steps {
-        git credentialsId: "${GITHUB_CREDENTIALS}", url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
-      }
-    }
-
     stage('Build Docker Image') {
       steps {
         script {
@@ -27,7 +20,7 @@ pipeline {
     stage('Push to DockerHub') {
       steps {
         script {
-          sh "echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin"
+          sh "echo ${DOCKERHUB_CREDENTIALS_PSW} | docker login -u ${DOCKERHUB_CREDENTIALS_USR} --password-stdin"
           sh "docker push $IMAGE_NAME:latest"
         }
       }
