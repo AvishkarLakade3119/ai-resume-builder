@@ -2,67 +2,64 @@ pipeline {
   agent any
 
   environment {
-    // DockerHub credentials
-    DOCKER_CREDENTIALS = credentials('dockerhub-credentials')
-    // Kubeconfig file for kubectl
-    KUBECONFIG_FILE = credentials('kubeconfig')
-    // Image details
+    DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
+    GITHUB_CREDENTIALS = credentials('github-credentials')
+    KUBECONFIG_CREDENTIALS = credentials('kubeconfig')
+    DNSEXIT_API_KEY = credentials('dnsexit-api-key')
     IMAGE_NAME = "avishkarlakade/ai-resume-builder"
-    IMAGE_TAG = "${env.BUILD_NUMBER}"
   }
 
   stages {
-    stage('Checkout Source') {
+    stage('Clone Repo') {
       steps {
-        checkout scm
+        git credentialsId: "${GITHUB_CREDENTIALS}", url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
       }
     }
 
-    stage('Docker Build') {
+    stage('Build Docker Image') {
       steps {
         script {
-          sh """
-            docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
-          """
+          sh 'docker build -t $IMAGE_NAME:latest .'
         }
       }
     }
 
-    stage('Docker Login & Push') {
+    stage('Push to DockerHub') {
       steps {
         script {
-          sh """
-            echo "${DOCKER_CREDENTIALS_PSW}" | docker login -u "${DOCKER_CREDENTIALS_USR}" --password-stdin
-            docker push ${IMAGE_NAME}:${IMAGE_TAG}
-          """
+          sh "echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin"
+          sh "docker push $IMAGE_NAME:latest"
         }
       }
     }
 
     stage('Deploy to Kubernetes') {
       steps {
-        withEnv(["KUBECONFIG=$KUBECONFIG_FILE"]) {
-          // Optionally update image if already deployed
-          sh """
-            kubectl apply -f k8s/
-            # OR: uncomment the below if you just want to update the image in a running deployment
-            # kubectl set image deployment/ai-resume-builder ai-resume-builder=${IMAGE_NAME}:${IMAGE_TAG} --record
-          """
+        script {
+          withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+            sh '''
+              export KUBECONFIG=$KUBECONFIG
+              kubectl apply -f k8s/deployment-frontend.yaml
+              kubectl apply -f k8s/service-frontend.yaml
+            '''
+          }
         }
       }
     }
-  }
 
-  post {
-    success {
-      echo "✅ Successfully built and deployed: ${IMAGE_NAME}:${IMAGE_TAG}"
-    }
-    failure {
-      echo "❌ Build or deployment failed!"
-    }
-    always {
-      cleanWs()
-      sh 'docker image prune -f'
+    stage('Update DNSExit with External IP') {
+      steps {
+        script {
+          withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+            def externalIP = sh(script: "export KUBECONFIG=$KUBECONFIG && kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}'", returnStdout: true).trim()
+            echo "External IP: ${externalIP}"
+
+            sh """
+              curl -X POST "https://dynamicdnsv6.dnsexit.com/update.jsp?apikey=${DNSEXIT_API_KEY}&domain=resumebuilder.publicvm.com&ip=${externalIP}"
+            """
+          }
+        }
+      }
     }
   }
 }
