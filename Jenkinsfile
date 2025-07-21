@@ -4,60 +4,87 @@ pipeline {
   environment {
     DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
     GITHUB_CREDENTIALS = credentials('github-credentials')
-    KUBECONFIG_CREDENTIALS = credentials('kubeconfig') // kubeconfig-embedded.yaml with ID 'kubeconfig'
+    KUBECONFIG_FILE = credentials('kubeconfig')
     DNSEXIT_API_KEY = credentials('dnsexit-api-key')
-    IMAGE_NAME = "avishkarlakade/ai-resume-builder"
+    DOMAIN_NAME = "resumebuilder.publicvm.com"
   }
 
   stages {
-    stage('Clone Repo') {
+    stage('Clone GitHub Repo') {
       steps {
-        git credentialsId: "${GITHUB_CREDENTIALS}", url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
+        git credentialsId: "${GITHUB_CREDENTIALS}", url: 'https://github.com/AvishkarLakade3119/ai-resume-builder.git'
       }
     }
 
     stage('Build Docker Image') {
       steps {
         script {
-          sh 'docker build -t $IMAGE_NAME:latest .'
+          docker.build("avishkarlakade/ai-resume-builder:latest")
         }
       }
     }
 
-    stage('Push to DockerHub') {
+    stage('Push Docker Image to DockerHub') {
       steps {
         script {
-          sh "echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin"
-          sh "docker push $IMAGE_NAME:latest"
+          docker.withRegistry('https://index.docker.io/v1/', 'dockerhub-credentials') {
+            docker.image("avishkarlakade/ai-resume-builder:latest").push()
+          }
         }
       }
     }
 
-    stage('Deploy to Minikube (NodePort)') {
+    stage('Deploy to Kubernetes') {
       steps {
         script {
-          withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+          withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_PATH')]) {
             sh '''
-              export KUBECONFIG=$KUBECONFIG
-              kubectl apply -f k8s/deployment-frontend.yaml
-              kubectl apply -f k8s/service-frontend.yaml
+              mkdir -p ~/.kube
+              cp $KUBECONFIG_PATH ~/.kube/config
+              kubectl apply -f k8s/deployment.yaml
+              kubectl apply -f k8s/service.yaml
             '''
           }
         }
       }
     }
 
-    stage('Update DNSExit with Azure VM Public IP') {
+    stage('Wait for External IP') {
       steps {
         script {
-          def externalIP = sh(script: "curl -s http://checkip.amazonaws.com", returnStdout: true).trim()
-          echo "Azure VM Public IP: ${externalIP}"
+          sh '''
+            echo "Waiting for External IP to be assigned..."
+            EXTERNAL_IP=""
+            for i in {1..20}; do
+              EXTERNAL_IP=$(kubectl get svc ai-resume-builder-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+              if [ "$EXTERNAL_IP" != "" ]; then
+                break
+              fi
+              echo "Still waiting..."
+              sleep 10
+            done
 
-          sh """
-            curl -X POST "https://dynamicdnsv6.dnsexit.com/update.jsp?apikey=${DNSEXIT_API_KEY}&domain=resumebuilder.publicvm.com&ip=${externalIP}"
-          """
+            if [ "$EXTERNAL_IP" = "" ]; then
+              echo "❌ Failed to get External IP"
+              exit 1
+            fi
+
+            echo "✅ External IP: $EXTERNAL_IP"
+
+            echo "Updating DNSExit Record..."
+            curl -X GET "https://api.dnsexit.com/RemoteUpdate.sv?login=$DOMAIN_NAME&password=$DNSEXIT_API_KEY&host=$DOMAIN_NAME&myip=$EXTERNAL_IP"
+          '''
         }
       }
+    }
+  }
+
+  post {
+    success {
+      echo '✅ Application Deployed & DNS Updated Successfully!'
+    }
+    failure {
+      echo '❌ Deployment Failed. Check logs for more info.'
     }
   }
 }
