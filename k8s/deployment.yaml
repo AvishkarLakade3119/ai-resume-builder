@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-resume-builder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-resume-builder
+  template:
+    metadata:
+      labels:
+        app: ai-resume-builder
+    spec:
+      containers:
+      - name: ai-resume-builder
+        image: avishkarlakade/ai-resume-builder:latest
+        ports:
+        - containerPort: 3000
