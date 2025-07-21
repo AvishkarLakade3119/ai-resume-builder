@@ -2,11 +2,14 @@ apiVersion: v1
 kind: Service
 metadata:
   name: ai-resume-builder-service
+  labels:
+    app: ai-resume-builder
 spec:
   type: LoadBalancer
   selector:
     app: ai-resume-builder
   ports:
-    - protocol: TCP
+    - name: http
+      protocol: TCP
       port: 80
       targetPort: 3000
