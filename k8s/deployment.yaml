@@ -1,9 +1,12 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: resume-builder
+  name: resume-builder-deployment
+  namespace: default
+  labels:
+    app: resume-builder
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: resume-builder
@@ -13,7 +16,20 @@ spec:
         app: resume-builder
     spec:
       containers:
-        - name: resume-builder
-          image: avishkarlakade/ai-resume-builder:latest
-          ports:
-            - containerPort: 3000
+      - name: resume-builder
+        image: avishkarlakade/resume-builder:latest
+        ports:
+        - containerPort: 3000
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+        env:
+        - name: MONGODB_URI
+          valueFrom:
+            secretKeyRef:
+              name: resume-builder-secrets
+              key: mongodb-uri
