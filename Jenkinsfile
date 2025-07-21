@@ -3,19 +3,12 @@ pipeline {
 
   environment {
     DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
-    GITHUB_CREDENTIALS = credentials('github-credentials')
     KUBECONFIG_FILE = credentials('kubeconfig')
     DNSEXIT_API_KEY = credentials('dnsexit-api-key')
     DOMAIN_NAME = "resumebuilder.publicvm.com"
   }
 
   stages {
-    stage('Clone GitHub Repo') {
-      steps {
-        git credentialsId: "${GITHUB_CREDENTIALS}", url: 'https://github.com/AvishkarLakade3119/ai-resume-builder.git'
-      }
-    }
-
     stage('Build Docker Image') {
       steps {
         script {
@@ -49,11 +42,11 @@ pipeline {
       }
     }
 
-    stage('Wait for External IP') {
+    stage('Wait for External IP and Update DNS') {
       steps {
         script {
           sh '''
-            echo "Waiting for External IP to be assigned..."
+            echo "Waiting for External IP..."
             EXTERNAL_IP=""
             for i in {1..20}; do
               EXTERNAL_IP=$(kubectl get svc ai-resume-builder-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
@@ -65,13 +58,12 @@ pipeline {
             done
 
             if [ "$EXTERNAL_IP" = "" ]; then
-              echo "❌ Failed to get External IP"
+              echo "❌ Could not get External IP"
               exit 1
             fi
 
             echo "✅ External IP: $EXTERNAL_IP"
-
-            echo "Updating DNSExit Record..."
+            echo "Updating DNSExit..."
             curl -X GET "https://api.dnsexit.com/RemoteUpdate.sv?login=$DOMAIN_NAME&password=$DNSEXIT_API_KEY&host=$DOMAIN_NAME&myip=$EXTERNAL_IP"
           '''
         }
@@ -81,10 +73,10 @@ pipeline {
 
   post {
     success {
-      echo '✅ Application Deployed & DNS Updated Successfully!'
+      echo '✅ Deployment Successful and DNS Updated!'
     }
     failure {
-      echo '❌ Deployment Failed. Check logs for more info.'
+      echo '❌ Deployment Failed. Check the console for details.'
     }
   }
 }
