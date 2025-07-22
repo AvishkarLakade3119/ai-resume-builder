@@ -2,29 +2,24 @@ pipeline {
   agent any
 
   environment {
-    IMAGE_NAME = 'avishkarlakade/ai-resume-builder'
-    KUBE_CONFIG = credentials('kubeconfig')
+    IMAGE_NAME = "avishkarlakade/ai-resume-builder"
+    KUBECONFIG = credentials('kubeconfig')
   }
 
   stages {
     stage('Checkout Code') {
       steps {
-        git credentialsId: 'github-credentials', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder.git'
+        git credentialsId: 'github-credentials',
+            url: 'https://github.com/AvishkarLakade3119/ai-resume-builder.git',
+            branch: 'main'
       }
     }
 
     stage('Start Minikube Tunnel') {
       steps {
         script {
-          sh '''
-            if ! pgrep -f "minikube tunnel" > /dev/null; then
-              echo "🔁 Starting minikube tunnel..."
-              nohup sudo minikube tunnel > tunnel.log 2>&1 &
-              sleep 10
-            else
-              echo "✅ Minikube tunnel already running."
-            fi
-          '''
+          sh 'pgrep -f "minikube tunnel" || nohup sudo minikube tunnel > /dev/null 2>&1 &'
+          sleep 10
         }
       }
     }
@@ -39,7 +34,7 @@ pipeline {
       steps {
         withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
           sh '''
-            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
             docker push $IMAGE_NAME
           '''
         }
@@ -48,29 +43,32 @@ pipeline {
 
     stage('Deploy to Kubernetes') {
       steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          sh '''
-            export KUBECONFIG=$KUBECONFIG_FILE
-            kubectl set image deployment/resume-app resume-app=$IMAGE_NAME --namespace=default || kubectl apply -f k8s/
-          '''
-        }
+        sh '''
+          kubectl apply -f k8s/
+        '''
       }
     }
 
     stage('Wait for External IP') {
       steps {
         script {
-          env.EXTERNAL_IP = ''
-          timeout(time: 2, unit: 'MINUTES') {
+          timeout(time: 3, unit: 'MINUTES') {
             waitUntil {
-              env.EXTERNAL_IP = sh(
-                script: "kubectl get svc resume-service -o=jsonpath='{.status.loadBalancer.ingress[0].ip}' | tr -d \"'\"",
-                returnStdout: true
-              ).trim()
-              return env.EXTERNAL_IP != ""
+              script {
+                def svc = sh(script: "kubectl get svc resume-service -o json", returnStdout: true).trim()
+                def svcJson = readJSON text: svc
+                def ip = svcJson.status.loadBalancer?.ingress?.getAt(0)?.ip
+                if (ip) {
+                  env.EXTERNAL_IP = ip
+                  echo "External IP acquired: $EXTERNAL_IP"
+                  return true
+                } else {
+                  echo "Waiting for external IP..."
+                  return false
+                }
+              }
             }
           }
-          echo "🌐 External IP allocated: ${env.EXTERNAL_IP}"
         }
       }
     }
@@ -79,7 +77,12 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: 'dnsexit-api-key', variable: 'DNSEXIT_API_KEY')]) {
           sh '''
-            curl -X GET "https://update.dnsexit.com/RemoteUpdate.sv?login=lakadeavishkar@gmail.com&password=${DNSEXIT_API_KEY}&host=resumebuilder.publicvm.com&myip=${EXTERNAL_IP}"
+            curl -X POST "https://api.dnsexit.com/RemoteUpdate.sv" \
+              -d "login=lakadeavishkar@gmail.com" \
+              -d "password=$DNSEXIT_API_KEY" \
+              -d "host=resumebuilder.publicvm.com" \
+              -d "domain=publicvm.com" \
+              -d "ip=$EXTERNAL_IP"
           '''
         }
       }
@@ -87,11 +90,11 @@ pipeline {
   }
 
   post {
-    success {
-      echo '✅ CI/CD pipeline completed successfully.'
-    }
     failure {
-      echo '❌ Pipeline failed.'
+      echo "❌ Pipeline failed."
+    }
+    success {
+      echo "✅ Deployment completed successfully. Site: http://resumebuilder.publicvm.com"
     }
   }
 }
