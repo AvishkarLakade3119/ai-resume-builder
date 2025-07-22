@@ -2,29 +2,29 @@ pipeline {
   agent any
 
   environment {
-    DOCKER_IMAGE = 'avishkarlakade/ai-resume-builder'
-    KUBE_NAMESPACE = 'default'
-    K8S_MANIFESTS_DIR = 'k8s'
-    SERVICE_NAME = 'resume-service'
-    DOMAIN_NAME = 'resumebuilder.publicvm.com'
-    KUBECONFIG_PATH = 'kubeconfig'
+    IMAGE_NAME = "avishkarlakade/ai-resume-builder"
+    IMAGE_TAG = "latest"
+    K8S_NAMESPACE = "default"
+    DEPLOYMENT_NAME = "resume-deployment"
+    SERVICE_NAME = "resume-service"
+    DOMAIN = "resumebuilder.publicvm.com"
+    KUBECONFIG_CREDENTIALS = credentials('kubeconfig')
+    DOCKER_CREDENTIALS = credentials('dockerhub-credentials')
+    DNS_API_KEY = credentials('dnsexit-api-key')
   }
 
   stages {
     stage('Checkout') {
       steps {
-        git credentialsId: 'github-credentials', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
+        git credentialsId: 'github-credentials', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder', branch: 'main'
       }
     }
 
     stage('Docker Build & Push') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-          sh '''
-            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-            docker build -t $DOCKER_IMAGE .
-            docker push $DOCKER_IMAGE
-          '''
+        withDockerRegistry(credentialsId: 'dockerhub-credentials', url: '') {
+          sh 'docker build -t $IMAGE_NAME:$IMAGE_TAG .'
+          sh 'docker push $IMAGE_NAME:$IMAGE_TAG'
         }
       }
     }
@@ -34,7 +34,7 @@ pipeline {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
           sh '''
             export KUBECONFIG=$KUBECONFIG_FILE
-            kubectl apply -f $K8S_MANIFESTS_DIR
+            kubectl apply -f k8s/
           '''
         }
       }
@@ -43,49 +43,43 @@ pipeline {
     stage('Wait for External IP') {
       steps {
         script {
-          def maxRetries = 20
-          def sleepSeconds = 15
           def externalIP = ""
-          withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-            for (int i = 0; i < maxRetries; i++) {
-              externalIP = sh(
-                script: "KUBECONFIG=$KUBECONFIG_FILE kubectl get svc $SERVICE_NAME -o=jsonpath='{.status.loadBalancer.ingress[0].ip}'",
-                returnStdout: true
-              ).trim()
-              if (externalIP) {
-                echo "External IP: $externalIP"
-                break
-              } else {
-                echo "Waiting for External IP... (${i + 1}/$maxRetries)"
-                sleep sleepSeconds
+          timeout(time: 3, unit: 'MINUTES') {
+            waitUntil {
+              def svc = sh(script: '''
+                export KUBECONFIG=$KUBECONFIG_FILE
+                kubectl get svc $SERVICE_NAME --output=jsonpath="{.status.loadBalancer.ingress[0].ip}"
+              ''', returnStdout: true).trim()
+
+              if (svc && svc != "") {
+                externalIP = svc
+                env.EXTERNAL_IP = externalIP
+                return true
               }
+              return false
             }
-            if (!externalIP) {
-              error("Failed to get External IP after ${maxRetries * sleepSeconds} seconds.")
-            }
-            env.EXTERNAL_IP = externalIP
           }
+          echo "🔗 External IP is: ${env.EXTERNAL_IP}"
         }
       }
     }
 
     stage('Update DNSExit') {
       steps {
-        withCredentials([string(credentialsId: 'dnsexit-api-key', variable: 'DNSEXIT_API_KEY')]) {
-          sh '''
-            curl -X GET "https://dynamicdnsexit.com/update?apikey=$DNSEXIT_API_KEY&hostname=$DOMAIN_NAME&myip=$EXTERNAL_IP"
-          '''
-        }
+        sh '''
+          curl -X GET "https://dynamicdnsexit.com/dnsupdate.php?\
+          hostname=$DOMAIN&myip=$EXTERNAL_IP&token=$DNS_API_KEY"
+        '''
       }
     }
   }
 
   post {
-    success {
-      echo "✅ Deployment successful! Visit http://$DOMAIN_NAME"
-    }
     failure {
       echo "❌ Deployment failed."
+    }
+    success {
+      echo "✅ Successfully deployed to http://$DOMAIN"
     }
   }
 }
