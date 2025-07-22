@@ -2,52 +2,40 @@ pipeline {
   agent any
 
   environment {
-    DOCKER_IMAGE = 'avishkarlakade3119/ai-resume-builder'
-    K8S_DEPLOYMENT = 'resume-deployment'
-    K8S_SERVICE = 'resume-service'
-    K8S_NAMESPACE = 'default'
-    GITHUB_REPO = 'https://github.com/AvishkarLakade3119/ai-resume-builder.git'
-    BRANCH = 'main'
+    DOCKER_IMAGE = 'avishkarlakade/ai-resume-builder'
+    KUBE_NAMESPACE = 'default'
+    K8S_MANIFESTS_DIR = 'k8s'
+    SERVICE_NAME = 'resume-service'
+    DOMAIN_NAME = 'resumebuilder.publicvm.com'
+    KUBECONFIG_PATH = 'kubeconfig'
   }
 
   stages {
-    stage('Checkout Code') {
+    stage('Checkout') {
       steps {
-        git branch: "${BRANCH}",
-            credentialsId: 'github-credentials',
-            url: "${GITHUB_REPO}"
+        git credentialsId: 'github-credentials', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
       }
     }
 
-    stage('Build Docker Image') {
-      steps {
-        script {
-          docker.build("${DOCKER_IMAGE}:latest")
-        }
-      }
-    }
-
-    stage('Push Docker Image') {
+    stage('Docker Build & Push') {
       steps {
         withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-          script {
-            sh """
-              echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-              docker push ${DOCKER_IMAGE}:latest
-            """
-          }
+          sh '''
+            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+            docker build -t $DOCKER_IMAGE .
+            docker push $DOCKER_IMAGE
+          '''
         }
       }
     }
 
-    stage('Deploy to Kubernetes') {
+    stage('Deploy to Minikube') {
       steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          withEnv(["KUBECONFIG=$KUBECONFIG_FILE"]) {
-            sh """
-              kubectl apply -f k8s/
-            """
-          }
+          sh '''
+            export KUBECONFIG=$KUBECONFIG_FILE
+            kubectl apply -f $K8S_MANIFESTS_DIR
+          '''
         }
       }
     }
@@ -55,52 +43,49 @@ pipeline {
     stage('Wait for External IP') {
       steps {
         script {
-          timeout(time: 2, unit: 'MINUTES') {
-            waitUntil {
-              script {
-                def externalIp = sh(
-                  script: "kubectl get svc ${K8S_SERVICE} -n ${K8S_NAMESPACE} --output=jsonpath='{.status.loadBalancer.ingress[0].ip}'",
-                  returnStdout: true
-                ).trim()
-
-                if (externalIp == '' || externalIp == 'null') {
-                  echo "Waiting for External IP..."
-                  return false
-                } else {
-                  env.EXTERNAL_IP = externalIp
-                  echo "External IP acquired: ${externalIp}"
-                  return true
-                }
+          def maxRetries = 20
+          def sleepSeconds = 15
+          def externalIP = ""
+          withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+            for (int i = 0; i < maxRetries; i++) {
+              externalIP = sh(
+                script: "KUBECONFIG=$KUBECONFIG_FILE kubectl get svc $SERVICE_NAME -o=jsonpath='{.status.loadBalancer.ingress[0].ip}'",
+                returnStdout: true
+              ).trim()
+              if (externalIP) {
+                echo "External IP: $externalIP"
+                break
+              } else {
+                echo "Waiting for External IP... (${i + 1}/$maxRetries)"
+                sleep sleepSeconds
               }
             }
+            if (!externalIP) {
+              error("Failed to get External IP after ${maxRetries * sleepSeconds} seconds.")
+            }
+            env.EXTERNAL_IP = externalIP
           }
         }
       }
     }
 
-    stage('Update DNS via DNSExit API') {
+    stage('Update DNSExit') {
       steps {
-        withCredentials([string(credentialsId: 'dnsexit-api-key', variable: 'DNS_API_KEY')]) {
-          script {
-            def domain = "resumebuilder.publicvm.com"
-            def ip = env.EXTERNAL_IP
-            def updateCmd = """
-              curl -X GET "https://api.dnsexit.com/RemoteUpdate.sv?login=lakadeavishkar&password=${DNS_API_KEY}&host=resume&domain=publicvm.com&ip=${ip}"
-            """
-            sh updateCmd
-            echo "DNS updated for ${domain} -> ${ip}"
-          }
+        withCredentials([string(credentialsId: 'dnsexit-api-key', variable: 'DNSEXIT_API_KEY')]) {
+          sh '''
+            curl -X GET "https://dynamicdnsexit.com/update?apikey=$DNSEXIT_API_KEY&hostname=$DOMAIN_NAME&myip=$EXTERNAL_IP"
+          '''
         }
       }
     }
   }
 
   post {
-    failure {
-      echo '❌ Build failed. Check the logs for details.'
-    }
     success {
-      echo "✅ Deployment successful! App is live at: http://resumebuilder.publicvm.com"
+      echo "✅ Deployment successful! Visit http://$DOMAIN_NAME"
+    }
+    failure {
+      echo "❌ Deployment failed."
     }
   }
 }
