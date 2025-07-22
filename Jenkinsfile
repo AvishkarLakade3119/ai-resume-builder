@@ -1,90 +1,90 @@
 pipeline {
-    agent any
+  agent any
 
-    environment {
-        DOCKER_IMAGE = "avilakade/ai-resume-builder"
-        DOCKER_TAG = "latest"
-        KUBE_CONFIG_CREDENTIAL_ID = 'kubeconfig-cred'
-        DOCKER_CREDENTIALS_ID = 'dockerhub-credentials'
+  environment {
+    IMAGE_NAME = "avishkarlakade/resume-app"
+    K8S_DIR = "k8s"
+
+    // Credentials (already stored in Jenkins)
+    DOCKERHUB = credentials('dockerhub-credentials')
+    GITHUB_CREDS = credentials('github-credentials')
+    KUBECONFIG_PATH = credentials('kubeconfig')
+    DNSEXIT_API_KEY = credentials('dnsexit-api-key')
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        git url: 'https://github.com/AvishkarLakade3119/ai-resume-builder.git',
+            credentialsId: "${GITHUB_CREDS}"
+      }
     }
 
-    stages {
-        stage('Clone Code') {
-            steps {
-                git credentialsId: 'github-credentials', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
-            }
+    stage('Build Docker Image') {
+      steps {
+        script {
+          sh 'docker build -t $IMAGE_NAME:latest .'
         }
-
-        stage('Build Docker Image') {
-            steps {
-                sh 'docker build -t $DOCKER_IMAGE:$DOCKER_TAG .'
-            }
-        }
-
-        stage('Push to DockerHub') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: "$DOCKER_CREDENTIALS_ID", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    sh '''
-                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-                        docker push $DOCKER_IMAGE:$DOCKER_TAG
-                    '''
-                }
-            }
-        }
-
-        stage('Deploy to Kubernetes') {
-            steps {
-                withCredentials([file(credentialsId: "${KUBE_CONFIG_CREDENTIAL_ID}", variable: 'KUBECONFIG')]) {
-                    sh '''
-                    cat <<EOF | kubectl apply -f -
-                    apiVersion: apps/v1
-                    kind: Deployment
-                    metadata:
-                      name: resume-app
-                    spec:
-                      replicas: 1
-                      selector:
-                        matchLabels:
-                          app: resume
-                      template:
-                        metadata:
-                          labels:
-                            app: resume
-                        spec:
-                          containers:
-                          - name: resume-container
-                            image: $DOCKER_IMAGE:$DOCKER_TAG
-                            ports:
-                            - containerPort: 3000
-                    EOF
-
-                    cat <<EOF | kubectl apply -f -
-                    apiVersion: v1
-                    kind: Service
-                    metadata:
-                      name: resume-service
-                    spec:
-                      selector:
-                        app: resume
-                      ports:
-                      - protocol: TCP
-                        port: 80
-                        targetPort: 3000
-                        nodePort: 30080
-                      type: NodePort
-                    EOF
-                    '''
-                }
-            }
-        }
+      }
     }
 
-    post {
-        success {
-            echo '✅ Pipeline completed successfully!'
+    stage('Push to DockerHub') {
+      steps {
+        script {
+          sh '''
+            echo $DOCKERHUB_PSW | docker login -u $DOCKERHUB_USR --password-stdin
+            docker push $IMAGE_NAME:latest
+          '''
         }
-        failure {
-            echo '❌ Pipeline failed.'
-        }
+      }
     }
+
+    stage('Apply Kubernetes Secrets') {
+      steps {
+        script {
+          sh "kubectl apply -f ${K8S_DIR}/secret.yaml --kubeconfig=${KUBECONFIG_PATH}"
+        }
+      }
+    }
+
+    stage('Deploy to Minikube') {
+      steps {
+        script {
+          sh """
+            kubectl apply -f ${K8S_DIR}/deployment.yaml --kubeconfig=${KUBECONFIG_PATH}
+            kubectl apply -f ${K8S_DIR}/service.yaml --kubeconfig=${KUBECONFIG_PATH}
+          """
+        }
+      }
+    }
+
+    stage('Update DNS (DNSExit)') {
+      steps {
+        script {
+          def ipCmd = "kubectl get svc resume-service --kubeconfig=${KUBECONFIG_PATH} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'"
+          def externalIP = sh(script: ipCmd, returnStdout: true).trim()
+
+          // If externalIP is empty (e.g. Minikube), fallback to NodePort IP from Minikube service command
+          if (!externalIP) {
+            externalIP = sh(script: "minikube service resume-service --url | sed -n 's|http://\\(.*\\):.*|\\1|p'", returnStdout: true).trim()
+          }
+
+          echo "External IP detected: ${externalIP}"
+
+          sh """
+            curl -X GET "https://update.dnsexit.com/RemoteUpdate.sv?login=lakadeavishkar@gmail.com&password=${DNSEXIT_API_KEY}&host=resumebuilder.publicvm.com&myip=${externalIP}"
+          """
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "✅ Deployment successful! Visit: https://resumebuilder.publicvm.com"
+    }
+    failure {
+      echo "❌ Deployment failed. Check Jenkins logs for details."
+    }
+  }
 }
