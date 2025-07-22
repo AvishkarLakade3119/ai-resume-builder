@@ -2,81 +2,96 @@ pipeline {
   agent any
 
   environment {
-    IMAGE_NAME = 'avishkarlakade/ai-resume-builder'
-    IMAGE_TAG = 'latest'
-    DOCKER_HUB_CREDENTIALS = credentials('dockerhub-credentials')
+    DOCKER_IMAGE = "avishkarlakade/ai-resume-builder:latest"
+    REGISTRY_CREDENTIALS = credentials('dockerhub-credentials')
     DNS_EXIT_API_KEY = credentials('dnsexit-api-key')
-  }
-
-  triggers {
-    githubPush()
+    GITHUB_CREDENTIALS = credentials('github-credentials')
+    KUBECONFIG_CRED = credentials('kubeconfig') // Use Secret File type in Jenkins
   }
 
   stages {
     stage('Checkout Code') {
       steps {
-        git branch: 'main', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
+        git credentialsId: 'github-credentials', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder', branch: 'main'
       }
     }
 
     stage('Build Docker Image') {
       steps {
-        sh 'docker build -t $IMAGE_NAME:$IMAGE_TAG .'
+        sh 'docker build -t $DOCKER_IMAGE .'
       }
     }
 
-    stage('Push Docker Image to Docker Hub') {
+    stage('Push to Docker Hub') {
       steps {
-        withDockerRegistry([ credentialsId: 'dockerhub-credentials', url: '' ]) {
-          sh 'docker push $IMAGE_NAME:$IMAGE_TAG'
+        withDockerRegistry([credentialsId: 'dockerhub-credentials', url: '']) {
+          sh 'docker push $DOCKER_IMAGE'
         }
       }
     }
 
-    stage('Deploy to Minikube (Kubernetes)') {
+    stage('Set KUBECONFIG') {
+      steps {
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+          sh '''
+            mkdir -p ~/.kube
+            cp $KUBECONFIG_FILE ~/.kube/config
+            chmod 600 ~/.kube/config
+          '''
+        }
+      }
+    }
+
+    stage('Deploy to Kubernetes') {
       steps {
         sh '''
-        mkdir -p ~/.kube
-        echo "$KUBECONFIG" > ~/.kube/config
-        chmod 600 ~/.kube/config
-
-        kubectl delete -f k8s/ --ignore-not-found
-        kubectl apply -f k8s/
+          kubectl delete deploy resume-deployment --ignore-not-found
+          kubectl apply -f k8s/
         '''
       }
     }
 
-    stage('Expose External IP & Update DNSExit') {
+    stage('Wait for External IP') {
       steps {
         script {
-          def externalIP = sh(script: "kubectl get svc resume-service -o=jsonpath='{.status.loadBalancer.ingress[0].ip}' || kubectl get svc resume-service -o=jsonpath='{.status.loadBalancer.ingress[0].hostname}' || kubectl get svc resume-service -o=jsonpath='{.status.loadBalancer.ingress[0].*}' || kubectl get svc resume-service -o=jsonpath='{.status.loadBalancer.ingress[0]}'", returnStdout: true).trim()
-          if (!externalIP) {
-            externalIP = sh(script: "kubectl get svc resume-service -o=jsonpath='{.spec.clusterIP}'", returnStdout: true).trim()
+          def maxRetries = 20
+          def sleepTime = 15
+          def externalIP = ""
+
+          for (int i = 0; i < maxRetries; i++) {
+            externalIP = sh(script: "kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}'", returnStdout: true).trim()
+            if (externalIP && externalIP != "''") {
+              break
+            }
+            echo "Waiting for External IP allocation... ($i/$maxRetries)"
+            sleep sleepTime
           }
 
-          echo "External IP detected: ${externalIP}"
+          if (!externalIP || externalIP == "''") {
+            error("Failed to get External IP")
+          }
 
-          def updateDnsCommand = """
-          curl -X POST "https://www.dnsexit.com/RemoteUpdate.sv" \\
-            -d "login=username" \\
-            -d "password=$DNS_EXIT_API_KEY" \\
-            -d "host=resumebuilder" \\
-            -d "domain=publicvm.com" \\
-            -d "ip=${externalIP}"
-          """
-
-          sh updateDnsCommand
+          env.EXTERNAL_IP = externalIP
+          echo "External IP is: ${externalIP}"
         }
+      }
+    }
+
+    stage('Update DNSExit') {
+      steps {
+        sh '''
+          curl -X POST "https://dynamicdns.park-your-domain.com/update?host=resumebuilder&domain=publicvm.com&password=$DNS_EXIT_API_KEY&ip=$EXTERNAL_IP"
+        '''
       }
     }
   }
 
   post {
     failure {
-      echo '❌ Build failed!'
+      echo "Build or deployment failed!"
     }
     success {
-      echo '✅ CI/CD Pipeline completed successfully!'
+      echo "✅ App deployed successfully at http://resumebuilder.publicvm.com"
     }
   }
 }
