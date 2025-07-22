@@ -6,7 +6,7 @@ pipeline {
     DOCKER_HUB_CREDENTIALS = credentials('dockerhub-credentials')
     GITHUB_CREDENTIALS = credentials('github-credentials')
     DNS_EXIT_API_KEY = credentials('dnsexit-api-key')
-    KUBECONFIG = credentials('kubeconfig')
+    KUBECONFIG_SECRET = credentials('kubeconfig')
     SERVICE_NAME = "resume-service"
     DOMAIN = "resumebuilder.publicvm.com"
   }
@@ -34,47 +34,45 @@ pipeline {
       }
     }
 
-    stage('Configure Kubeconfig') {
+    stage('Setup Kubeconfig') {
       steps {
-        writeFile file: 'kubeconfig', text: "${KUBECONFIG}"
+        writeFile file: 'kubeconfig', text: "${KUBECONFIG_SECRET}"
         sh 'export KUBECONFIG=$WORKSPACE/kubeconfig'
       }
     }
 
-    stage('Apply Kubernetes Manifests') {
+    stage('Apply Kubernetes YAMLs') {
       steps {
         sh 'kubectl apply -f k8s/'
       }
     }
 
-    stage('Start Minikube Tunnel in Background') {
+    stage('Start Minikube Tunnel (Background)') {
       steps {
         sh '''
           pkill -f "minikube tunnel" || true
           nohup minikube tunnel > tunnel.log 2>&1 &
-          sleep 10
+          sleep 15
         '''
       }
     }
 
-    stage('Wait for Service External IP') {
+    stage('Get External Access Info') {
       steps {
         script {
-          // Get Minikube IP
           def ip = sh(script: "minikube ip", returnStdout: true).trim()
-
-          // Get NodePort for the service
           def port = sh(script: "kubectl get svc $SERVICE_NAME -o jsonpath='{.spec.ports[0].nodePort}'", returnStdout: true).trim()
 
           env.RESUME_IP = ip
           env.RESUME_PORT = port
           env.RESUME_URL = "http://${ip}:${port}"
-          echo "🌐 Resume Builder App URL: ${env.RESUME_URL}"
+
+          echo "🟢 Accessible App URL: ${env.RESUME_URL}"
         }
       }
     }
 
-    stage('Update DNSExit Record') {
+    stage('Update DNS with DNSExit API') {
       steps {
         script {
           def response = sh(
@@ -87,7 +85,8 @@ pipeline {
             """,
             returnStdout: true
           ).trim()
-          echo "🔁 DNSExit Response: ${response}"
+
+          echo "🌐 DNSExit Response: ${response}"
         }
       }
     }
@@ -95,10 +94,10 @@ pipeline {
 
   post {
     success {
-      echo "✅ Pipeline completed. App available at: ${env.RESUME_URL}"
+      echo "✅ Deployment successful! Access your app at: ${env.RESUME_URL}"
     }
     failure {
-      echo "❌ Pipeline failed. Check tunnel.log or console output."
+      echo "❌ Deployment failed. See Jenkins logs and tunnel.log for details."
     }
   }
 }
