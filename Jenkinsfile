@@ -5,21 +5,12 @@ pipeline {
     IMAGE_NAME = "avishkarlakade/resume-app"
     K8S_DIR = "k8s"
 
-    // Credentials (already stored in Jenkins)
     DOCKERHUB = credentials('dockerhub-credentials')
-    GITHUB_CREDS = credentials('github-credentials')
     KUBECONFIG_PATH = credentials('kubeconfig')
     DNSEXIT_API_KEY = credentials('dnsexit-api-key')
   }
 
   stages {
-    stage('Checkout') {
-      steps {
-        git url: 'https://github.com/AvishkarLakade3119/ai-resume-builder.git',
-            credentialsId: "${GITHUB_CREDS}"
-      }
-    }
-
     stage('Build Docker Image') {
       steps {
         script {
@@ -61,13 +52,10 @@ pipeline {
     stage('Update DNS (DNSExit)') {
       steps {
         script {
-          def ipCmd = "kubectl get svc resume-service --kubeconfig=${KUBECONFIG_PATH} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'"
-          def externalIP = sh(script: ipCmd, returnStdout: true).trim()
-
-          // If externalIP is empty (e.g. Minikube), fallback to NodePort IP from Minikube service command
-          if (!externalIP) {
-            externalIP = sh(script: "minikube service resume-service --url | sed -n 's|http://\\(.*\\):.*|\\1|p'", returnStdout: true).trim()
-          }
+          def externalIP = sh(
+            script: "minikube service resume-service --url | sed -n 's|http://\\(.*\\):.*|\\1|p'",
+            returnStdout: true
+          ).trim()
 
           echo "External IP detected: ${externalIP}"
 
