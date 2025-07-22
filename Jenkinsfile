@@ -3,16 +3,18 @@ pipeline {
 
   environment {
     DOCKER_IMAGE = "avishkarlakade/ai-resume-builder:latest"
-    REGISTRY_CREDENTIALS = credentials('dockerhub-credentials')
-    DNS_EXIT_API_KEY = credentials('dnsexit-api-key')
+    DOCKER_HUB_CREDENTIALS = credentials('dockerhub-credentials')
     GITHUB_CREDENTIALS = credentials('github-credentials')
-    KUBECONFIG_CRED = credentials('kubeconfig') // Use Secret File type in Jenkins
+    DNS_EXIT_API_KEY = credentials('dnsexit-api-key')
+    KUBECONFIG_CONTENT = credentials('kubeconfig')
+    SERVICE_NAME = "resume-service"
+    DOMAIN = "resumebuilder.publicvm.com"
   }
 
   stages {
     stage('Checkout Code') {
       steps {
-        git credentialsId: 'github-credentials', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder', branch: 'main'
+        git branch: 'main', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
       }
     }
 
@@ -22,76 +24,78 @@ pipeline {
       }
     }
 
-    stage('Push to Docker Hub') {
-      steps {
-        withDockerRegistry([credentialsId: 'dockerhub-credentials', url: '']) {
-          sh 'docker push $DOCKER_IMAGE'
-        }
-      }
-    }
-
-    stage('Set KUBECONFIG') {
-      steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          sh '''
-            mkdir -p ~/.kube
-            cp $KUBECONFIG_FILE ~/.kube/config
-            chmod 600 ~/.kube/config
-          '''
-        }
-      }
-    }
-
-    stage('Deploy to Kubernetes') {
+    stage('Push Docker Image to Docker Hub') {
       steps {
         sh '''
-          kubectl delete deploy resume-deployment --ignore-not-found
-          kubectl apply -f k8s/
+          echo "$DOCKER_HUB_CREDENTIALS_PSW" | docker login -u "$DOCKER_HUB_CREDENTIALS_USR" --password-stdin
+          docker push $DOCKER_IMAGE
         '''
       }
     }
 
-    stage('Wait for External IP') {
+    stage('Setup kubeconfig') {
+      steps {
+        writeFile file: 'kubeconfig', text: "${KUBECONFIG_CONTENT}"
+        sh 'export KUBECONFIG=$WORKSPACE/kubeconfig'
+      }
+    }
+
+    stage('Apply Kubernetes Manifests') {
+      steps {
+        sh 'kubectl apply -f k8s/'
+      }
+    }
+
+    stage('Start Minikube Tunnel in Background') {
+      steps {
+        sh '''
+          pkill -f "minikube tunnel" || true
+          nohup minikube tunnel > tunnel.log 2>&1 &
+          sleep 10
+        '''
+      }
+    }
+
+    stage('Fetch External IP and NodePort') {
       steps {
         script {
-          def maxRetries = 20
-          def sleepTime = 15
-          def externalIP = ""
+          def minikubeIP = sh(script: "minikube ip", returnStdout: true).trim()
+          def nodePort = sh(script: "kubectl get svc $SERVICE_NAME -o jsonpath='{.spec.ports[0].nodePort}'", returnStdout: true).trim()
 
-          for (int i = 0; i < maxRetries; i++) {
-            externalIP = sh(script: "kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}'", returnStdout: true).trim()
-            if (externalIP && externalIP != "''") {
-              break
-            }
-            echo "Waiting for External IP allocation... ($i/$maxRetries)"
-            sleep sleepTime
-          }
+          env.RESUME_IP = minikubeIP
+          env.RESUME_PORT = nodePort
+          env.RESUME_URL = "http://${minikubeIP}:${nodePort}"
 
-          if (!externalIP || externalIP == "''") {
-            error("Failed to get External IP")
-          }
-
-          env.EXTERNAL_IP = externalIP
-          echo "External IP is: ${externalIP}"
+          echo "🌐 App available at ${env.RESUME_URL}"
         }
       }
     }
 
-    stage('Update DNSExit') {
+    stage('Update DNSExit Record') {
       steps {
-        sh '''
-          curl -X POST "https://dynamicdns.park-your-domain.com/update?host=resumebuilder&domain=publicvm.com&password=$DNS_EXIT_API_KEY&ip=$EXTERNAL_IP"
-        '''
+        script {
+          def response = sh(
+            script: """
+              curl -s -X POST "https://update.dnsexit.com/RemoteUpdate.sv" \\
+              -d "login=${DNS_EXIT_API_KEY_USR}" \\
+              -d "password=${DNS_EXIT_API_KEY_PSW}" \\
+              -d "host=${DOMAIN}" \\
+              -d "ip=${RESUME_IP}"
+            """,
+            returnStdout: true
+          ).trim()
+          echo "🔁 DNSExit Response: ${response}"
+        }
       }
     }
   }
 
   post {
-    failure {
-      echo "Build or deployment failed!"
-    }
     success {
-      echo "✅ App deployed successfully at http://resumebuilder.publicvm.com"
+      echo "✅ Deployment successful! App live at ${env.RESUME_URL}"
+    }
+    failure {
+      echo "❌ Deployment failed. Check tunnel.log or console output for more info."
     }
   }
 }
