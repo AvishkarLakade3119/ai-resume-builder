@@ -12,7 +12,6 @@ pipeline {
   }
 
   stages {
-
     stage('Checkout Code') {
       steps {
         git branch: 'main', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
@@ -25,7 +24,7 @@ pipeline {
       }
     }
 
-    stage('Login and Push to Docker Hub') {
+    stage('Push to Docker Hub') {
       steps {
         sh '''
           echo "$DOCKER_HUB_CREDENTIALS_PSW" | docker login -u "$DOCKER_HUB_CREDENTIALS_USR" --password-stdin
@@ -34,7 +33,17 @@ pipeline {
       }
     }
 
-    stage('Setup Kubeconfig') {
+    stage('Start Minikube') {
+      steps {
+        sh '''
+          if ! minikube status | grep -q "Running"; then
+            minikube start --driver=docker
+          fi
+        '''
+      }
+    }
+
+    stage('Configure Kubeconfig') {
       steps {
         writeFile file: 'kubeconfig', text: "${KUBECONFIG_SECRET}"
         sh 'export KUBECONFIG=$WORKSPACE/kubeconfig'
@@ -66,8 +75,7 @@ pipeline {
           env.RESUME_IP = ip
           env.RESUME_PORT = port
           env.RESUME_URL = "http://${ip}:${port}"
-
-          echo "🟢 Accessible App URL: ${env.RESUME_URL}"
+          echo "🌐 Resume Builder URL: ${env.RESUME_URL}"
         }
       }
     }
@@ -85,8 +93,7 @@ pipeline {
             """,
             returnStdout: true
           ).trim()
-
-          echo "🌐 DNSExit Response: ${response}"
+          echo "🔁 DNSExit Response: ${response}"
         }
       }
     }
@@ -94,10 +101,10 @@ pipeline {
 
   post {
     success {
-      echo "✅ Deployment successful! Access your app at: ${env.RESUME_URL}"
+      echo "✅ Pipeline completed. App is available at: ${env.RESUME_URL}"
     }
     failure {
-      echo "❌ Deployment failed. See Jenkins logs and tunnel.log for details."
+      echo "❌ Deployment failed. See Jenkins logs and tunnel.log for debugging."
     }
   }
 }
