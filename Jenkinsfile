@@ -2,27 +2,20 @@ pipeline {
   agent any
 
   environment {
-    DOCKER_IMAGE = "avishkarlakade/ai-resume-builder"
+    DOCKER_IMAGE = "avishkarlakade/ai-resume-builder:latest"
+    DOCKER_HUB_CREDENTIALS = credentials('dockerhub-credentials')
+    GITHUB_CREDENTIALS = credentials('github-credentials')
+    DNS_EXIT_API_KEY = credentials('dnsexit-api-key')
+    KUBECONFIG = credentials('kubeconfig')
+    SERVICE_NAME = "resume-service"
+    DOMAIN = "resumebuilder.publicvm.com"
   }
 
   stages {
-    stage('Checkout') {
-      steps {
-        git branch: 'main',
-            credentialsId: 'github-credentials',
-            url: 'https://github.com/AvishkarLakade3119/ai-resume-builder.git'
-      }
-    }
 
-    stage('Start Minikube Tunnel') {
+    stage('Checkout Code') {
       steps {
-        script {
-          // Kill any existing tunnel processes
-          sh "pgrep -f minikube tunnel || true | xargs -r sudo kill -9 || true"
-          // Start minikube tunnel in background
-          sh "nohup sudo minikube tunnel &"
-          sleep 10
-        }
+        git branch: 'main', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
       }
     }
 
@@ -32,71 +25,80 @@ pipeline {
       }
     }
 
-    stage('Push Docker Image') {
+    stage('Login and Push to Docker Hub') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-          sh '''
-            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-            docker push $DOCKER_IMAGE
-          '''
+        sh '''
+          echo "$DOCKER_HUB_CREDENTIALS_PSW" | docker login -u "$DOCKER_HUB_CREDENTIALS_USR" --password-stdin
+          docker push $DOCKER_IMAGE
+        '''
+      }
+    }
+
+    stage('Configure Kubeconfig') {
+      steps {
+        writeFile file: 'kubeconfig', text: "${KUBECONFIG}"
+        sh 'export KUBECONFIG=$WORKSPACE/kubeconfig'
+      }
+    }
+
+    stage('Apply Kubernetes Manifests') {
+      steps {
+        sh 'kubectl apply -f k8s/'
+      }
+    }
+
+    stage('Start Minikube Tunnel in Background') {
+      steps {
+        sh '''
+          pkill -f "minikube tunnel" || true
+          nohup minikube tunnel > tunnel.log 2>&1 &
+          sleep 10
+        '''
+      }
+    }
+
+    stage('Wait for Service External IP') {
+      steps {
+        script {
+          // Get Minikube IP
+          def ip = sh(script: "minikube ip", returnStdout: true).trim()
+
+          // Get NodePort for the service
+          def port = sh(script: "kubectl get svc $SERVICE_NAME -o jsonpath='{.spec.ports[0].nodePort}'", returnStdout: true).trim()
+
+          env.RESUME_IP = ip
+          env.RESUME_PORT = port
+          env.RESUME_URL = "http://${ip}:${port}"
+          echo "🌐 Resume Builder App URL: ${env.RESUME_URL}"
         }
       }
     }
 
-    stage('Deploy to Kubernetes') {
+    stage('Update DNSExit Record') {
       steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          withEnv(["KUBECONFIG=${KUBECONFIG_FILE}"]) {
-            sh 'kubectl apply -f k8s/'
-          }
+        script {
+          def response = sh(
+            script: """
+              curl -s -X POST "https://update.dnsexit.com/RemoteUpdate.sv" \\
+              -d "login=${DNS_EXIT_API_KEY_USR}" \\
+              -d "password=${DNS_EXIT_API_KEY_PSW}" \\
+              -d "host=${DOMAIN}" \\
+              -d "ip=${RESUME_IP}"
+            """,
+            returnStdout: true
+          ).trim()
+          echo "🔁 DNSExit Response: ${response}"
         }
       }
     }
+  }
 
-    stage('Wait for External IP') {
-      steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          withEnv(["KUBECONFIG=${KUBECONFIG_FILE}"]) {
-            script {
-              timeout(time: 3, unit: 'MINUTES') {
-                waitUntil {
-                  def svcJson = sh(script: "kubectl get svc resume-service -o json", returnStdout: true).trim()
-                  def json = readJSON text: svcJson
-                  def ip = json.status.loadBalancer?.ingress?.getAt(0)?.ip
-                  if (ip) {
-                    echo "External IP assigned: ${ip}"
-                    env.EXTERNAL_IP = ip
-                    return true
-                  } else {
-                    echo "Waiting for external IP..."
-                    sleep 10
-                    return false
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+  post {
+    success {
+      echo "✅ Pipeline completed. App available at: ${env.RESUME_URL}"
     }
-
-    stage('Update DNS with DNSExit') {
-      steps {
-        withCredentials([string(credentialsId: 'dnsexit-api-key', variable: 'DNS_EXIT_API_KEY')]) {
-          script {
-            def domain = 'resumebuilder.publicvm.com'
-            def ip = env.EXTERNAL_IP
-            echo "Updating DNS for ${domain} to IP ${ip}"
-
-            // Replace the following curl command with your DNSExit API call
-            sh """
-              curl -X POST https://api.dnsexit.com/dns/update \
-                -H "Authorization: Bearer ${DNS_EXIT_API_KEY}" \
-                -d "domain=${domain}&ip=${ip}"
-            """
-          }
-        }
-      }
+    failure {
+      echo "❌ Pipeline failed. Check tunnel.log or console output."
     }
   }
 }
