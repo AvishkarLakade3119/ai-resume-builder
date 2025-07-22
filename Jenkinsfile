@@ -2,66 +2,85 @@ pipeline {
   agent any
 
   environment {
-    IMAGE_NAME = "avishkarlakade/resume-app"
-    K8S_DIR = "k8s"
-
-    DOCKERHUB = credentials('dockerhub-credentials')
-    KUBECONFIG_PATH = credentials('kubeconfig')
-    DNSEXIT_API_KEY = credentials('dnsexit-api-key')
+    IMAGE_NAME = 'avishkarlakade/ai-resume-builder'
+    KUBE_CONFIG = credentials('kubeconfig')
   }
 
   stages {
-    stage('Build Docker Image') {
+    stage('Checkout Code') {
       steps {
-        script {
-          sh 'docker build -t $IMAGE_NAME:latest .'
-        }
+        git credentialsId: 'github-credentials', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder.git'
       }
     }
 
-    stage('Push to DockerHub') {
+    stage('Start Minikube Tunnel') {
       steps {
         script {
           sh '''
-            echo $DOCKERHUB_PSW | docker login -u $DOCKERHUB_USR --password-stdin
-            docker push $IMAGE_NAME:latest
+            if ! pgrep -f "minikube tunnel" > /dev/null; then
+              echo "🔁 Starting minikube tunnel..."
+              nohup sudo minikube tunnel > tunnel.log 2>&1 &
+              sleep 10
+            else
+              echo "✅ Minikube tunnel already running."
+            fi
           '''
         }
       }
     }
 
-    stage('Apply Kubernetes Secrets') {
+    stage('Build Docker Image') {
       steps {
-        script {
-          sh "kubectl apply -f ${K8S_DIR}/secret.yaml --kubeconfig=${KUBECONFIG_PATH}"
+        sh 'docker build -t $IMAGE_NAME .'
+      }
+    }
+
+    stage('Push to Docker Hub') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+          sh '''
+            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+            docker push $IMAGE_NAME
+          '''
         }
       }
     }
 
-    stage('Deploy to Minikube') {
+    stage('Deploy to Kubernetes') {
       steps {
-        script {
-          sh """
-            kubectl apply -f ${K8S_DIR}/deployment.yaml --kubeconfig=${KUBECONFIG_PATH}
-            kubectl apply -f ${K8S_DIR}/service.yaml --kubeconfig=${KUBECONFIG_PATH}
-          """
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+          sh '''
+            export KUBECONFIG=$KUBECONFIG_FILE
+            kubectl set image deployment/resume-app resume-app=$IMAGE_NAME --namespace=default || kubectl apply -f k8s/
+          '''
         }
       }
     }
 
-    stage('Update DNS (DNSExit)') {
+    stage('Wait for External IP') {
       steps {
         script {
-          def externalIP = sh(
-            script: "minikube service resume-service --url | sed -n 's|http://\\(.*\\):.*|\\1|p'",
-            returnStdout: true
-          ).trim()
+          env.EXTERNAL_IP = ''
+          timeout(time: 2, unit: 'MINUTES') {
+            waitUntil {
+              env.EXTERNAL_IP = sh(
+                script: "kubectl get svc resume-service -o=jsonpath='{.status.loadBalancer.ingress[0].ip}' | tr -d \"'\"",
+                returnStdout: true
+              ).trim()
+              return env.EXTERNAL_IP != ""
+            }
+          }
+          echo "🌐 External IP allocated: ${env.EXTERNAL_IP}"
+        }
+      }
+    }
 
-          echo "External IP detected: ${externalIP}"
-
-          sh """
-            curl -X GET "https://update.dnsexit.com/RemoteUpdate.sv?login=lakadeavishkar@gmail.com&password=${DNSEXIT_API_KEY}&host=resumebuilder.publicvm.com&myip=${externalIP}"
-          """
+    stage('Update DNS with DNSExit') {
+      steps {
+        withCredentials([string(credentialsId: 'dnsexit-api-key', variable: 'DNSEXIT_API_KEY')]) {
+          sh '''
+            curl -X GET "https://update.dnsexit.com/RemoteUpdate.sv?login=lakadeavishkar@gmail.com&password=${DNSEXIT_API_KEY}&host=resumebuilder.publicvm.com&myip=${EXTERNAL_IP}"
+          '''
         }
       }
     }
@@ -69,10 +88,10 @@ pipeline {
 
   post {
     success {
-      echo "✅ Deployment successful! Visit: https://resumebuilder.publicvm.com"
+      echo '✅ CI/CD pipeline completed successfully.'
     }
     failure {
-      echo "❌ Deployment failed. Check Jenkins logs for details."
+      echo '❌ Pipeline failed.'
     }
   }
 }
