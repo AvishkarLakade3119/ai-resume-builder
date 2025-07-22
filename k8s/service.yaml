@@ -3,10 +3,11 @@ kind: Service
 metadata:
   name: resume-service
 spec:
-  type: LoadBalancer
+  type: NodePort
   selector:
     app: resume-app
   ports:
     - protocol: TCP
       port: 80
-      targetPort: 3000
+      targetPort: 3000 # or your app port
+      nodePort: 30080  # a port in range 30000-32767
