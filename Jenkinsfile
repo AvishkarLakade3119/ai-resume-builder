@@ -1,14 +1,13 @@
 pipeline {
   agent any
-
   environment {
     DOCKER_IMAGE = "avishkarlakade/ai-resume-builder:latest"
-    DOCKER_HUB_CREDENTIALS = credentials('dockerhub-credentials')
-    GITHUB_CREDENTIALS = credentials('github-credentials')
-    DNS_EXIT_API_KEY = credentials('dnsexit-api-key')
-    KUBECONFIG_SECRET = credentials('kubeconfig')
-    SERVICE_NAME = "resume-service"
-    DOMAIN = "resumebuilder.publicvm.com"
+    KUBECONFIG = "$HOME/.kube/config"
+    DEPLOYMENT_YAML = "k8s/deployment.yaml"
+    SERVICE_YAML = "k8s/service.yaml"
+    DNS_EXIT_API = "https://api.dnsexit.com/RemoteUpdate.sv"
+    DNS_EXIT_HOSTNAME = "yourdomain.com"
+    DNS_EXIT_API_KEY = credentials('dnsexit-api-key') // must be added in Jenkins credentials
   }
 
   stages {
@@ -26,85 +25,61 @@ pipeline {
 
     stage('Push to Docker Hub') {
       steps {
-        sh '''
-          echo "$DOCKER_HUB_CREDENTIALS_PSW" | docker login -u "$DOCKER_HUB_CREDENTIALS_USR" --password-stdin
-          docker push $DOCKER_IMAGE
-        '''
-      }
-    }
-
-    stage('Start Minikube') {
-      steps {
-        sh '''
-          if ! minikube status | grep -q "Running"; then
-            minikube start --driver=docker
-          fi
-        '''
-      }
-    }
-
-    stage('Configure Kubeconfig') {
-      steps {
-        writeFile file: 'kubeconfig', text: "${KUBECONFIG_SECRET}"
-        sh 'export KUBECONFIG=$WORKSPACE/kubeconfig'
+        withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'DOCKER_HUB_USER', passwordVariable: 'DOCKER_HUB_PASS')]) {
+          sh """
+            echo "$DOCKER_HUB_PASS" | docker login -u "$DOCKER_HUB_USER" --password-stdin
+            docker push $DOCKER_IMAGE
+          """
+        }
       }
     }
 
     stage('Apply Kubernetes YAMLs') {
       steps {
-        sh 'kubectl apply -f k8s/'
+        sh """
+          kubectl apply -f $DEPLOYMENT_YAML
+          kubectl apply -f $SERVICE_YAML
+        """
       }
     }
 
-    stage('Start Minikube Tunnel (Background)') {
-      steps {
-        sh '''
-          pkill -f "minikube tunnel" || true
-          nohup minikube tunnel > tunnel.log 2>&1 &
-          sleep 15
-        '''
-      }
-    }
-
-    stage('Get External Access Info') {
+    stage('Wait for Service IP') {
       steps {
         script {
-          def ip = sh(script: "minikube ip", returnStdout: true).trim()
-          def port = sh(script: "kubectl get svc $SERVICE_NAME -o jsonpath='{.spec.ports[0].nodePort}'", returnStdout: true).trim()
-
-          env.RESUME_IP = ip
-          env.RESUME_PORT = port
-          env.RESUME_URL = "http://${ip}:${port}"
-          echo "🌐 Resume Builder URL: ${env.RESUME_URL}"
+          def retries = 10
+          def externalIP = ""
+          for (int i = 0; i < retries; i++) {
+            externalIP = sh(script: "kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}'", returnStdout: true).trim()
+            if (externalIP) {
+              break
+            }
+            echo "Waiting for External IP..."
+            sleep(10)
+          }
+          if (!externalIP) {
+            // fallback to NodePort external IP (manual retrieval from minikube)
+            externalIP = sh(script: "minikube ip", returnStdout: true).trim()
+          }
+          env.RESUME_APP_EXTERNAL_IP = externalIP
         }
       }
     }
 
-    stage('Update DNS with DNSExit API') {
+    stage('Update DNSExit Record') {
       steps {
-        script {
-          def response = sh(
-            script: """
-              curl -s -X POST "https://update.dnsexit.com/RemoteUpdate.sv" \\
-              -d "login=${DNS_EXIT_API_KEY_USR}" \\
-              -d "password=${DNS_EXIT_API_KEY_PSW}" \\
-              -d "host=${DOMAIN}" \\
-              -d "ip=${RESUME_IP}"
-            """,
-            returnStdout: true
-          ).trim()
-          echo "🔁 DNSExit Response: ${response}"
-        }
+        sh """
+          curl -X GET "$DNS_EXIT_API?login=${DNS_EXIT_API_KEY_USR}&password=${DNS_EXIT_API_KEY_PSW}&host=${DNS_EXIT_HOSTNAME}&myip=$RESUME_APP_EXTERNAL_IP"
+        """
       }
     }
   }
 
   post {
     success {
-      echo "✅ Pipeline completed. App is available at: ${env.RESUME_URL}"
+      echo "✅ Deployment complete! App available at http://$RESUME_APP_EXTERNAL_IP:30080"
     }
     failure {
-      echo "❌ Deployment failed. See Jenkins logs and tunnel.log for debugging."
+      echo "❌ Deployment failed. Check pipeline logs."
     }
   }
 }
