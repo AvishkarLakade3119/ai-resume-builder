@@ -1,13 +1,15 @@
 pipeline {
   agent any
+
   environment {
-    DOCKER_IMAGE = "avishkarlakade/ai-resume-builder:latest"
-    KUBECONFIG = "$HOME/.kube/config"
-    DEPLOYMENT_YAML = "k8s/deployment.yaml"
-    SERVICE_YAML = "k8s/service.yaml"
-    DNS_EXIT_API = "https://api.dnsexit.com/RemoteUpdate.sv"
-    DNS_EXIT_HOSTNAME = "yourdomain.com"
-    DNS_EXIT_API_KEY = credentials('dnsexit-api-key') // must be added in Jenkins credentials
+    IMAGE_NAME = 'avishkarlakade/ai-resume-builder'
+    IMAGE_TAG = 'latest'
+    DOCKER_HUB_CREDENTIALS = credentials('dockerhub-credentials')
+    DNS_EXIT_API_KEY = credentials('dnsexit-api-key')
+  }
+
+  triggers {
+    githubPush()
   }
 
   stages {
@@ -19,67 +21,62 @@ pipeline {
 
     stage('Build Docker Image') {
       steps {
-        sh 'docker build -t $DOCKER_IMAGE .'
+        sh 'docker build -t $IMAGE_NAME:$IMAGE_TAG .'
       }
     }
 
-    stage('Push to Docker Hub') {
+    stage('Push Docker Image to Docker Hub') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'DOCKER_HUB_USER', passwordVariable: 'DOCKER_HUB_PASS')]) {
-          sh """
-            echo "$DOCKER_HUB_PASS" | docker login -u "$DOCKER_HUB_USER" --password-stdin
-            docker push $DOCKER_IMAGE
-          """
+        withDockerRegistry([ credentialsId: 'dockerhub-credentials', url: '' ]) {
+          sh 'docker push $IMAGE_NAME:$IMAGE_TAG'
         }
       }
     }
 
-    stage('Apply Kubernetes YAMLs') {
+    stage('Deploy to Minikube (Kubernetes)') {
       steps {
-        sh """
-          kubectl apply -f $DEPLOYMENT_YAML
-          kubectl apply -f $SERVICE_YAML
-        """
+        sh '''
+        mkdir -p ~/.kube
+        echo "$KUBECONFIG" > ~/.kube/config
+        chmod 600 ~/.kube/config
+
+        kubectl delete -f k8s/ --ignore-not-found
+        kubectl apply -f k8s/
+        '''
       }
     }
 
-    stage('Wait for Service IP') {
+    stage('Expose External IP & Update DNSExit') {
       steps {
         script {
-          def retries = 10
-          def externalIP = ""
-          for (int i = 0; i < retries; i++) {
-            externalIP = sh(script: "kubectl get svc resume-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}'", returnStdout: true).trim()
-            if (externalIP) {
-              break
-            }
-            echo "Waiting for External IP..."
-            sleep(10)
-          }
+          def externalIP = sh(script: "kubectl get svc resume-service -o=jsonpath='{.status.loadBalancer.ingress[0].ip}' || kubectl get svc resume-service -o=jsonpath='{.status.loadBalancer.ingress[0].hostname}' || kubectl get svc resume-service -o=jsonpath='{.status.loadBalancer.ingress[0].*}' || kubectl get svc resume-service -o=jsonpath='{.status.loadBalancer.ingress[0]}'", returnStdout: true).trim()
           if (!externalIP) {
-            // fallback to NodePort external IP (manual retrieval from minikube)
-            externalIP = sh(script: "minikube ip", returnStdout: true).trim()
+            externalIP = sh(script: "kubectl get svc resume-service -o=jsonpath='{.spec.clusterIP}'", returnStdout: true).trim()
           }
-          env.RESUME_APP_EXTERNAL_IP = externalIP
-        }
-      }
-    }
 
-    stage('Update DNSExit Record') {
-      steps {
-        sh """
-          curl -X GET "$DNS_EXIT_API?login=${DNS_EXIT_API_KEY_USR}&password=${DNS_EXIT_API_KEY_PSW}&host=${DNS_EXIT_HOSTNAME}&myip=$RESUME_APP_EXTERNAL_IP"
-        """
+          echo "External IP detected: ${externalIP}"
+
+          def updateDnsCommand = """
+          curl -X POST "https://www.dnsexit.com/RemoteUpdate.sv" \\
+            -d "login=username" \\
+            -d "password=$DNS_EXIT_API_KEY" \\
+            -d "host=resumebuilder" \\
+            -d "domain=publicvm.com" \\
+            -d "ip=${externalIP}"
+          """
+
+          sh updateDnsCommand
+        }
       }
     }
   }
 
   post {
-    success {
-      echo "✅ Deployment complete! App available at http://$RESUME_APP_EXTERNAL_IP:30080"
-    }
     failure {
-      echo "❌ Deployment failed. Check pipeline logs."
+      echo '❌ Build failed!'
+    }
+    success {
+      echo '✅ CI/CD Pipeline completed successfully!'
     }
   }
 }
