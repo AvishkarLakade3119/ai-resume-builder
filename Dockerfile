@@ -4,8 +4,7 @@ WORKDIR /app
 
 COPY . .
 
-# Copy .env file into the image
-COPY .env .env
+# Removed COPY .env .env because .env is not committed to repo
 
 RUN npm install
 RUN npm run build
