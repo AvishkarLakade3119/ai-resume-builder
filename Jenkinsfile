@@ -49,19 +49,18 @@ pipeline {
       steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
           script {
-            def externalIP = sh(
-              script: "kubectl get svc $SERVICE_NAME -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || kubectl get svc $SERVICE_NAME -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'",
-              returnStdout: true
-            ).trim()
+            def serviceUrl = sh(script: "minikube service $SERVICE_NAME --url", returnStdout: true).trim()
+            echo "Service URL: ${serviceUrl}"
 
-            echo "External IP: ${externalIP}"
+            def serviceIP = sh(script: "echo '${serviceUrl}' | sed -E 's|http://([^:/]+).*|\\1|'", returnStdout: true).trim()
+            echo "Extracted IP: ${serviceIP}"
 
-            if (externalIP) {
+            if (serviceIP) {
               sh """
-                curl -X GET "https://update.dnsexit.com/RemoteUpdate.sv?login=avishkarlakade&password=$DNS_EXIT_API_KEY&host=$DOMAIN&myip=${externalIP}"
+                curl -X GET "https://update.dnsexit.com/RemoteUpdate.sv?login=avishkarlakade&password=$DNS_EXIT_API_KEY&host=$DOMAIN&myip=${serviceIP}"
               """
             } else {
-              error("Failed to retrieve external IP for service $SERVICE_NAME")
+              error("Failed to retrieve service IP from Minikube")
             }
           }
         }
