@@ -2,84 +2,74 @@ pipeline {
   agent any
 
   environment {
-    IMAGE_NAME = "avishkarlakade/ai-resume-builder"
-    IMAGE_TAG = "latest"
-    K8S_NAMESPACE = "default"
-    DEPLOYMENT_NAME = "resume-deployment"
-    SERVICE_NAME = "resume-service"
-    DOMAIN = "resumebuilder.publicvm.com"
+    DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
+    GITHUB_CREDENTIALS = credentials('github-credentials')
+    DNS_EXIT_API_KEY = credentials('dnsexit-api-key')
     KUBECONFIG_CREDENTIALS = credentials('kubeconfig')
-    DOCKER_CREDENTIALS = credentials('dockerhub-credentials')
-    DNS_API_KEY = credentials('dnsexit-api-key')
+    IMAGE_NAME = "avishkarlakade/resumecraft:latest"
   }
 
   stages {
     stage('Checkout') {
       steps {
-        git credentialsId: 'github-credentials', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder', branch: 'main'
+        git credentialsId: 'github-credentials', url: 'https://github.com/AvishkarLakade3119/ai-resume-builder'
       }
     }
 
-    stage('Docker Build & Push') {
+    stage('Build Docker Image') {
       steps {
-        withDockerRegistry(credentialsId: 'dockerhub-credentials', url: '') {
-          sh 'docker build -t $IMAGE_NAME:$IMAGE_TAG .'
-          sh 'docker push $IMAGE_NAME:$IMAGE_TAG'
+        script {
+          sh 'docker build -t $IMAGE_NAME .'
+        }
+      }
+    }
+
+    stage('Push to DockerHub') {
+      steps {
+        script {
+          sh "echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin"
+          sh 'docker push $IMAGE_NAME'
         }
       }
     }
 
     stage('Deploy to Minikube') {
       steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          sh '''
-            export KUBECONFIG=$KUBECONFIG_FILE
-            kubectl apply -f k8s/
-          '''
+        script {
+          withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+            sh '''
+              export KUBECONFIG=$KUBECONFIG_FILE
+              kubectl apply -f k8s/deployment.yaml
+              kubectl apply -f k8s/service.yaml
+            '''
+          }
         }
       }
     }
 
-    stage('Wait for External IP') {
+    stage('Update DNS Record') {
       steps {
         script {
-          def externalIP = ""
-          timeout(time: 3, unit: 'MINUTES') {
-            waitUntil {
-              def svc = sh(script: '''
-                export KUBECONFIG=$KUBECONFIG_FILE
-                kubectl get svc $SERVICE_NAME --output=jsonpath="{.status.loadBalancer.ingress[0].ip}"
-              ''', returnStdout: true).trim()
+          withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+            sh '''
+              export KUBECONFIG=$KUBECONFIG_FILE
+              IP=""
+              for i in {1..10}; do
+                IP=$(kubectl get svc resume-service -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                if [ ! -z "$IP" ]; then break; fi
+                echo "Waiting for external IP..."; sleep 10
+              done
 
-              if (svc && svc != "") {
-                externalIP = svc
-                env.EXTERNAL_IP = externalIP
-                return true
-              }
-              return false
-            }
+              if [ -z "$IP" ]; then
+                echo "External IP not assigned."; exit 1
+              fi
+
+              curl -X POST "https://api.dnsexit.com/RemoteUpdate.sv" \
+                -d "login=avishkarlakade&password=$DNS_EXIT_API_KEY&host=resumebuilder&domain=publicvm.com&ip=$IP"
+            '''
           }
-          echo "🔗 External IP is: ${env.EXTERNAL_IP}"
         }
       }
-    }
-
-    stage('Update DNSExit') {
-      steps {
-        sh '''
-          curl -X GET "https://dynamicdnsexit.com/dnsupdate.php?\
-          hostname=$DOMAIN&myip=$EXTERNAL_IP&token=$DNS_API_KEY"
-        '''
-      }
-    }
-  }
-
-  post {
-    failure {
-      echo "❌ Deployment failed."
-    }
-    success {
-      echo "✅ Successfully deployed to http://$DOMAIN"
     }
   }
 }
