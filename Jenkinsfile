@@ -36,25 +36,33 @@ pipeline {
 
     stage('Deploy to Kubernetes') {
       steps {
-        sh '''
-          kubectl apply -f $K8S_DIR/deployment.yaml
-          kubectl apply -f $K8S_DIR/service.yaml
-        '''
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+          sh '''
+            kubectl apply -f $K8S_DIR/deployment.yaml
+            kubectl apply -f $K8S_DIR/service.yaml
+          '''
+        }
       }
     }
 
     stage('Update DNSExit IP') {
       steps {
-        script {
-          def externalIP = sh(script: "kubectl get svc $SERVICE_NAME -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || kubectl get svc $SERVICE_NAME -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'", returnStdout: true).trim()
-          echo "External IP: ${externalIP}"
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+          script {
+            def externalIP = sh(
+              script: "kubectl get svc $SERVICE_NAME -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || kubectl get svc $SERVICE_NAME -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'",
+              returnStdout: true
+            ).trim()
 
-          if (externalIP) {
-            sh """
-              curl -X GET "https://update.dnsexit.com/RemoteUpdate.sv?login=avishkarlakade&password=$DNS_EXIT_API_KEY&host=$DOMAIN&myip=$externalIP"
-            """
-          } else {
-            error("Failed to retrieve external IP for service $SERVICE_NAME")
+            echo "External IP: ${externalIP}"
+
+            if (externalIP) {
+              sh """
+                curl -X GET "https://update.dnsexit.com/RemoteUpdate.sv?login=avishkarlakade&password=$DNS_EXIT_API_KEY&host=$DOMAIN&myip=${externalIP}"
+              """
+            } else {
+              error("Failed to retrieve external IP for service $SERVICE_NAME")
+            }
           }
         }
       }
