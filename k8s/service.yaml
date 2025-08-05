@@ -3,11 +3,9 @@ kind: Service
 metadata:
   name: resume-service
 spec:
-  type: NodePort
+  type: LoadBalancer
   selector:
     app: resume-app
   ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 3000  # Your container's internal port
-      nodePort: 30080   # NodePort (accessible from outside via VM_IP:30080)
+    - port: 80
+      targetPort: 3000
