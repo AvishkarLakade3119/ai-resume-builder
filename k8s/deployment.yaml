@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: resume-app
+  name: resume-deployment
 spec:
   replicas: 1
   selector:
@@ -13,10 +13,7 @@ spec:
         app: resume-app
     spec:
       containers:
-        - name: resume-app
-          image: avishkarlakade/resume-app:latest
-          envFrom:
-            - secretRef:
-                name: resume-env
+        - name: resume-container
+          image: avishkarlakade/resumecraft:latest
           ports:
             - containerPort: 3000
