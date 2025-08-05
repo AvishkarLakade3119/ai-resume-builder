@@ -19,6 +19,6 @@ spec:
             - containerPort: 3000
           env:
             - name: MONGODB_URI
-              value: "your-mongodb-uri-here"
+              value: "your-mongodb-uri-here"      # Replace with actual MongoDB URI or use Secret
             - name: ANOTHER_ENV_VAR
-              value: "some-value"
+              value: "some-value"                 # Replace with any other env variables you need
